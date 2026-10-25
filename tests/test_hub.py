@@ -1,5 +1,6 @@
 import json
 import os
+import socket
 import struct
 import sys
 import threading
@@ -107,6 +108,38 @@ class MessageTest(unittest.TestCase):
         self.assertFalse(hub.snapshot()["bridge"]["online"])
         hub.on_message(self.sock, "433/status", "online")
         self.assertTrue(hub.snapshot()["bridge"]["online"])
+
+
+class KeepaliveTest(unittest.TestCase):
+    def test_pings_while_the_broker_keeps_talking(self):
+        # the bridge's heartbeat keeps the hub's reads busy: it must still ping on its own silence,
+        # or the broker drops it after 1.5 x keepalive
+        hub_end, broker = socket.socketpair()
+        hub_end.settimeout(45)
+        broker.settimeout(2)
+        real_connect, real_keepalive = hub.socket.create_connection, hub.KEEPALIVE
+        hub.socket.create_connection = lambda *a, **k: hub_end
+        hub.KEEPALIVE = 1  # ping after 0.5 s of silence
+        try:
+            threading.Thread(target=hub.listen, daemon=True).start()
+            broker.recv(1024)                  # CONNECT
+            broker.sendall(b"\x20\x02\x00\x00")  # CONNACK
+            broker.recv(1024)                  # SUBSCRIBE
+            heartbeat = hub._packet(0x30, hub._str("433/status") + b"online")
+            got = b""
+            for _ in range(30):  # 1.5 s of heartbeats
+                broker.sendall(heartbeat)
+                time.sleep(0.05)
+                broker.setblocking(False)
+                try:
+                    got += broker.recv(1024)
+                except BlockingIOError:
+                    pass
+                broker.setblocking(True)
+            self.assertIn(b"\xc0\x00", got)
+        finally:
+            hub.socket.create_connection, hub.KEEPALIVE = real_connect, real_keepalive
+            hub.conn = None  # the thread stays blocked on the open pair, harmless
 
 
 class CoverTest(unittest.TestCase):

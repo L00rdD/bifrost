@@ -59,6 +59,8 @@ state = {"broker": False, "bridge_seen": None, "last_code": None, "outlets": {},
 lock = threading.Lock()
 conn: socket.socket | None = None  # the broker connection, shared with the web server
 send_lock = threading.Lock()       # one packet at a time on it, from either thread
+last_out = 0.0                     # monotonic time of the last packet sent to the broker
+KEEPALIVE = 60                     # s, told to the broker: it drops a client silent for 1.5 x that
 
 
 def now() -> str:
@@ -99,8 +101,10 @@ def _read(sock: socket.socket) -> tuple[int, bytes]:
 
 
 def _send(sock: socket.socket, data: bytes) -> None:
+    global last_out
     with send_lock:
         sock.sendall(data)
+        last_out = time.monotonic()
 
 
 def publish(sock: socket.socket, topic: str, payload: str, retain: bool = False) -> None:
@@ -299,7 +303,7 @@ def listen() -> None:
         try:
             with socket.create_connection((BROKER, 1883), timeout=45) as sock:
                 flags = 0x02 | (0x80 if USER else 0) | (0x40 if PASS else 0)
-                body = _str("MQTT") + bytes([4, flags]) + struct.pack("!H", 60) + _str("bifrost-hub")
+                body = _str("MQTT") + bytes([4, flags]) + struct.pack("!H", KEEPALIVE) + _str("bifrost-hub")
                 body += (_str(USER) if USER else b"") + (_str(PASS) if PASS else b"")
                 sock.sendall(_packet(0x10, body))
                 kind, ack = _read(sock)
@@ -307,7 +311,7 @@ def listen() -> None:
                     raise ConnectionError(f"connection refused (code {ack[1]})")
                 topics = ("433/#", "bifrost/outlet/+/set", "bifrost/outlet/+/state", "bifrost/cover/+/set",
                           "bifrost/cover/+/position", "bifrost/cover/+/state")
-                sock.sendall(_packet(0x82, struct.pack("!H", 1) + b"".join(_str(t) + b"\x00" for t in topics)))
+                _send(sock, _packet(0x82, struct.pack("!H", 1) + b"".join(_str(t) + b"\x00" for t in topics)))
                 with lock:
                     state["broker"] = True
                 conn = sock
@@ -316,8 +320,11 @@ def listen() -> None:
                     try:
                         kind, data = _read(sock)
                     except socket.timeout:
-                        _send(sock, b"\xc0\x00")  # ping, the broker drops us after 1.5 x keepalive
-                        continue
+                        kind = 0
+                    # The keepalive counts what we send, not what we receive: the bridge's heartbeat
+                    # every 10 s keeps the reads busy, so ping on our own silence, not on a read timeout.
+                    if time.monotonic() - last_out > KEEPALIVE / 2:
+                        _send(sock, b"\xc0\x00")
                     if kind >> 4 == 3:
                         tlen = struct.unpack("!H", data[:2])[0]
                         skip = 2 if (kind >> 1) & 3 else 0  # packet id only for QoS > 0
