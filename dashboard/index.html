@@ -53,7 +53,7 @@
       transform: translateX(-100%); }
     .outlet.burst::after { animation: streak 0.9s ease-out; }
     @keyframes streak { 0% { opacity: 1; transform: translateX(-100%); } 100% { opacity: 0; transform: translateX(100%); } }
-    .outlet.failed { animation: shake 0.45s; }
+    .outlet.failed, .cover.failed { animation: shake 0.45s; }
     @keyframes shake { 20%, 60% { transform: translateX(-6px); } 40%, 80% { transform: translateX(6px); } }
 
     /* the bulb, and the radio waves it sends while a code is on its way */
@@ -86,6 +86,37 @@
     .pending .switch { background: linear-gradient(90deg, var(--line), #6fe3ff66, var(--line)); background-size: 200% 100%; animation: shimmer 1s linear infinite; }
     .pending .switch[aria-checked="true"] { background: linear-gradient(90deg, var(--rainbow), #ff6b6b); background-size: 200% 100%; }
     @keyframes shimmer { to { background-position: -200% 0; } }
+
+    /* ---------- covers: the projection screen, drawn at the position the hub reckons ---------- */
+    #covers { display: grid; gap: 14px; }
+    .cover { display: grid; grid-template-columns: 150px 1fr; gap: 22px; align-items: center; }
+    .cover h2 { margin: 0; font-size: 1.1rem; }
+    .cover .when { margin: 2px 0 12px; color: var(--muted); font-size: 0.85rem; min-height: 1.3em; }
+    [data-theme] .cover h2 { font-family: var(--t-font-display); letter-spacing: 0.06em; text-transform: uppercase; color: var(--t-accent); }
+    .screen { position: relative; height: 152px; --p: 0; --t: 0; }
+    .screen .case { position: relative; z-index: 2; height: 14px; border-radius: 7px; background: linear-gradient(#3a4566, #1b2340);
+      border: 1px solid var(--line); box-shadow: 0 3px 8px #0008; }
+    .screen .case::after { content: ""; position: absolute; right: 8px; top: 4px; width: 5px; height: 5px; border-radius: 50%; background: var(--muted); }
+    .moving .screen .case::after { background: var(--accent); box-shadow: 0 0 8px var(--accent); animation: beam 0.8s ease-in-out infinite; }
+    .screen .cloth { position: absolute; left: 10px; right: 10px; top: 9px; height: calc(var(--p) * 1.32px); overflow: hidden;
+      background: linear-gradient(#f2f4ff, #cfd6f2); border-bottom: 4px solid #8e9bc4; border-radius: 0 0 3px 3px;
+      transition: height 1s linear; box-shadow: 0 6px 18px -6px #000a; }
+    .cover.unknown .screen .cloth { background: repeating-linear-gradient(135deg, #cfd6f233 0 8px, transparent 8px 16px); border-bottom-style: dashed; }
+    /* the picture on the screen: the rainbow bridge, brighter as the screen comes down */
+    .screen .cloth::before { content: ""; position: absolute; inset: 8px 8px auto; height: 106px; border-radius: 4px; opacity: calc(var(--p) / 140);
+      background: radial-gradient(ellipse at 50% 120%, transparent 38%, #ff6b6b 39% 44%, #ffc857 45% 50%, #7dffb3 51% 56%, #6fe3ff 57% 62%, #9b8cff 63% 68%, transparent 69%),
+                  linear-gradient(#0b1020, #1d2850); transition: opacity 1s linear; }
+    .screen .mark { position: absolute; left: 2px; right: 2px; top: calc(9px + var(--t) * 1.32px); border-top: 2px dashed var(--accent); opacity: 0;
+      transition: opacity 0.3s; pointer-events: none; }
+    .moving .screen .mark { opacity: 0.8; }
+    .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .controls button { min-width: 44px; height: 38px; padding: 0 12px; border-radius: 10px; cursor: pointer; font: inherit; font-size: 0.9rem;
+      color: var(--text); background: color-mix(in srgb, var(--line) 70%, transparent); border: 1px solid var(--line); transition: background 0.2s, border-color 0.2s; }
+    .controls button:hover { border-color: var(--accent); }
+    .controls button:focus-visible, .cover input:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    .controls button.stop { color: var(--down); }
+    .cover input[type="range"] { width: 100%; margin: 14px 0 0; accent-color: var(--accent); }
+    @media (max-width: 520px) { .cover { grid-template-columns: 1fr; } .screen { max-width: 180px; } }
 
     /* ---------- the chain: Homebridge, broker, RF bridge, the air ---------- */
     .chain { display: flex; align-items: center; gap: 0; position: relative; }
@@ -138,6 +169,9 @@
 
     <div class="label t-label">Outlets</div>
     <section id="outlets"></section>
+
+    <div class="label t-label" id="covers-label" hidden>Screen</div>
+    <section id="covers" hidden></section>
 
     <div class="label t-label">Signal path</div>
     <section class="panel t-panel">
@@ -213,6 +247,64 @@
       sw.setAttribute("aria-label", `${o.name}: ${on ? "on" : "off"}`);
     }
 
+    function coverCard(c) {
+      let k = document.querySelector(`.cover[data-id="${CSS.escape(c.id)}"]`);
+      if (!k) {
+        k = el("article", "cover panel t-panel");
+        k.dataset.id = c.id;
+        const screen = el("div", "screen");
+        screen.append(el("div", "case"), el("div", "cloth"), el("div", "mark"));
+        const info = el("div");
+        const controls = el("div", "controls");
+        for (const [label, body, cls, title] of [["▲ Close", { position: 0 }, "", "roll up"], ["■", { stop: true }, "stop", "stop"],
+                                                  ["▼ Open", { position: 100 }, "", "down to the projection height"]]) {
+          const b = el("button", cls, label);
+          b.title = title;
+          b.addEventListener("click", () => moveCover(c.id, body));
+          controls.append(b);
+        }
+        const range = el("input");
+        Object.assign(range, { type: "range", min: 0, max: 100, step: 5 });
+        range.setAttribute("aria-label", `${c.name}: position`);
+        range.addEventListener("pointerdown", () => (range.dragging = true));
+        range.addEventListener("change", () => { range.dragging = false; moveCover(c.id, { position: Number(range.value) }); });
+        info.append(el("h2"), el("p", "when"), controls, range);
+        k.append(screen, info);
+        $("#covers").append(k);
+      }
+      return k;
+    }
+
+    function paintCover(c) {
+      const k = coverCard(c), screen = $(".screen", k), range = $("input", k);
+      k.classList.toggle("moving", !!c.moving);
+      k.classList.toggle("unknown", c.position === null);
+      // unknown: drawn half down, hatched; the first move goes all the way up first
+      screen.style.setProperty("--p", c.position ?? 50);
+      screen.style.setProperty("--t", c.target ?? 0);
+      $("h2", k).textContent = c.name;
+      const where = (p) => (p === 0 ? "rolled up" : p === 100 ? "open" : `${p} %`);
+      $(".when", k).textContent = c.position === null ? (c.moving ? `moving ${c.moving}, position unknown` : "position unknown")
+        : c.moving ? `${c.moving === "down" ? "opening" : "closing"}… ${c.position} % → ${c.target ?? (c.moving === "down" ? 100 : 0)} %`
+        : where(c.position);
+      if (!range.dragging && document.activeElement !== range) range.value = c.target ?? c.position ?? 0;
+    }
+
+    async function moveCover(id, body) {
+      sendPacket(true);
+      try {
+        const r = await fetch(`/api/covers/${encodeURIComponent(id)}`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+        });
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status);
+      } catch (e) {
+        const k = document.querySelector(`.cover[data-id="${CSS.escape(id)}"]`);
+        if (k) flash(k, "failed");
+        return toast(`${id}: ${e.message}`);
+      }
+      setTimeout(load, 300);
+    }
+
     function flash(c, cls) {
       c.classList.remove(cls);
       void c.offsetWidth;  // restart the animation
@@ -250,6 +342,10 @@
         paintOutlet(o);
       }
 
+      const covers = s.covers || [];
+      $("#covers").hidden = $("#covers-label").hidden = !covers.length;
+      covers.forEach(paintCover);
+
       const last = $("#last"), lc = s.last_code;
       const key = lc ? lc.code + lc.at : null;
       if (lc) last.replaceChildren("last code ", el("b", "", lc.code), ` ${lc.via === "sent" ? "sent" : "heard from a remote"} · ${ago(lc.at)}`);
@@ -261,6 +357,7 @@
     }
 
     async function load() {
+      clearTimeout(load.next);
       try {
         const r = await fetch("/api/status.json", { cache: "no-store" });
         if (!r.ok) throw new Error(r.status);
@@ -268,6 +365,8 @@
       } catch {
         $("#updated").textContent = "the hub does not answer, retrying…";
       }
+      // every second while a cover moves, so its drawing follows it
+      load.next = setTimeout(load, status && (status.covers || []).some((c) => c.moving) ? 1000 : 5000);
     }
 
     async function toggle(id) {
@@ -305,7 +404,6 @@
     }
 
     load();
-    setInterval(load, 5000);
     document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
   </script>
 </body>
