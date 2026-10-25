@@ -109,9 +109,10 @@ followed the same way (down then stop: the hub knows where it stopped).
 
 1. With a Flipper Zero, *Sub-GHz > Read* each button: `Key` is the code in hex
    (`printf '%d' 0x1F37D4`), `TE` the pulse length.
-2. Screen at the top, *Read RAW*, press down then stop at the projection height;
-   again from there with up then stop. The time from the first down (or up) frame
-   to the first stop frame is `open_time` (`close_time`).
+2. Time it by hand: screen at the top, press down then stop at the projection
+   height (`open_time`), then up until it stops at the top (`close_time`). Not with
+   the Flipper's *Read RAW*: it loses the silences between presses, and the same
+   38 s move came out at 25.7 s and 17.3 s.
 3. Add a `[[cover]]` to `outlets.toml` (see the example), `make flash` if the bridge
    predates `<code> <pulse>`, then `make deploy`: the Home app gets a blind,
    100 % open = the screen down.
