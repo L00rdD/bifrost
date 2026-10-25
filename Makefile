@@ -12,7 +12,12 @@ deploy:          ## render the Homebridge config, copy the project to the Pi and
 	ssh $(PI) 'cd $(PI_DIR) && mkdir -p data/homebridge data/mosquitto data/adb \
 	  && cp homebridge/config.json data/homebridge/config.json && docker compose up -d --build --remove-orphans && docker compose restart hub \
 	  && (docker exec homebridge test -d /homebridge/node_modules/homebridge-mqttthing \
-	      || docker exec homebridge hb-service add homebridge-mqttthing) && docker compose restart homebridge'
+	      || docker exec homebridge hb-service add homebridge-mqttthing) \
+	  && if grep -q "\"platform\": \"Alexa\"" homebridge/config.json; then \
+	       (docker exec homebridge test -d /homebridge/node_modules/homebridge-alexa || docker exec homebridge hb-service add homebridge-alexa) \
+	       && echo "{\"insecureMode\": true}" > data/homebridge/.uix-hb-service-homebridge-startup.json; \
+	     else rm -f data/homebridge/.uix-hb-service-homebridge-startup.json; fi \
+	  && docker compose restart homebridge'
 
 env:             ## copy .env to the Pi (once, and after every change of .env)
 	scp .env $(PI):$(PI_DIR)/.env

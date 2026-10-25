@@ -53,6 +53,15 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(len(tv["remoteKeyValues"]), 16)
         self.assertNotIn("10.0.0.9", json.dumps(config))  # the projector's address stays with the hub
 
+    def test_alexa_only_with_its_account(self):
+        _, out, config = self.render()
+        self.assertNotIn("Alexa", out)
+        self.assertEqual([p["platform"] for p in config["platforms"]], ["config"])
+        _, out, config = self.render(env=ENV + "ALEXA_USER=me@example.com\nALEXA_PASS=secret\n")
+        self.assertIn("Alexa", out)
+        alexa = config["platforms"][-1]
+        self.assertEqual((alexa["platform"], alexa["username"], alexa["pin"]), ("Alexa", "me@example.com", "123-45-678"))
+
     def test_missing_env_values(self):
         code, out, config = self.render(env="MQTT_USER=u\n")
         self.assertNotEqual(code, 0)
