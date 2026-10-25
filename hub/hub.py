@@ -222,6 +222,7 @@ def move(cid: str, target: int | None, press: bool = True) -> None:
 
 def heard(cid: str, key: str) -> None:
     """A code of the cover on 433/receive that the hub did not send: someone used the remote."""
+    log.info("%s <- %s (remote)", cid, key)
     with lock:
         c = state["covers"][cid]
         if c["run"]:
