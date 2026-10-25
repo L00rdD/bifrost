@@ -53,7 +53,7 @@
       transform: translateX(-100%); }
     .outlet.burst::after { animation: streak 0.9s ease-out; }
     @keyframes streak { 0% { opacity: 1; transform: translateX(-100%); } 100% { opacity: 0; transform: translateX(100%); } }
-    .outlet.failed, .cover.failed { animation: shake 0.45s; }
+    .outlet.failed, .cover.failed, .projector.failed { animation: shake 0.45s; }
     @keyframes shake { 20%, 60% { transform: translateX(-6px); } 40%, 80% { transform: translateX(6px); } }
 
     /* the bulb, and the radio waves it sends while a code is on its way */
@@ -118,6 +118,38 @@
     .cover input[type="range"] { width: 100%; margin: 14px 0 0; accent-color: var(--accent); }
     @media (max-width: 520px) { .cover { grid-template-columns: 1fr; } .screen { max-width: 180px; } }
 
+    /* ---------- projectors: a beam of light when on, the app in front, a small remote ---------- */
+    #projectors { display: grid; gap: 14px; }
+    .projector { display: grid; grid-template-columns: 150px 1fr auto; gap: 22px; align-items: center; transition: border-color 0.4s, box-shadow 0.4s; }
+    .projector.on { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); box-shadow: 0 0 28px -8px var(--accent); }
+    .projector h2 { margin: 0; font-size: 1.1rem; }
+    .projector .when { margin: 2px 0 12px; color: var(--muted); font-size: 0.85rem; min-height: 1.3em; }
+    [data-theme] .projector h2 { font-family: var(--t-font-display); letter-spacing: 0.06em; text-transform: uppercase; color: var(--t-accent); }
+    .beamer { position: relative; height: 96px; }
+    .beamer svg { width: 150px; height: 96px; overflow: visible; }
+    .beamer .body { fill: #1b2340; stroke: var(--muted); stroke-width: 2; }
+    .beamer .lens { fill: #0b1020; stroke: var(--muted); stroke-width: 2; transition: fill 0.4s; }
+    .beamer .cone { opacity: 0; transition: opacity 0.6s; }
+    .beamer .led { fill: var(--down); }
+    .on .beamer .lens { fill: #e6ecff; filter: drop-shadow(0 0 6px #6fe3ff); }
+    .on .beamer .cone { opacity: 1; animation: flicker 3s ease-in-out infinite; }
+    .on .beamer .led { fill: var(--up); }
+    .away .beamer svg { opacity: 0.45; }
+    @keyframes flicker { 50% { opacity: 0.75; } }
+    .apps { display: flex; flex-wrap: wrap; gap: 6px; }
+    .apps button { height: 30px; padding: 0 10px; border-radius: 99px; cursor: pointer; font: inherit; font-size: 0.8rem; color: var(--text);
+      background: color-mix(in srgb, var(--line) 70%, transparent); border: 1px solid var(--line); transition: border-color 0.2s, background 0.2s; }
+    .apps button:hover { border-color: var(--accent); }
+    .apps button.front { background: linear-gradient(90deg, var(--rainbow)); color: #0b1020; border-color: transparent; font-weight: 600; }
+    .remote { display: grid; grid-template-columns: repeat(3, 34px); grid-auto-rows: 34px; gap: 4px; }
+    .remote button { padding: 0; border-radius: 9px; cursor: pointer; font-size: 0.85rem; color: var(--text);
+      background: color-mix(in srgb, var(--line) 70%, transparent); border: 1px solid var(--line); }
+    .remote button:hover { border-color: var(--accent); }
+    .remote button.ok { border-radius: 50%; }
+    .projector button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .projector .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    @media (max-width: 640px) { .projector { grid-template-columns: 1fr; } .beamer { height: 70px; } .beamer svg { height: 70px; } }
+
     /* ---------- the chain: Homebridge, broker, RF bridge, the air ---------- */
     .chain { display: flex; align-items: center; gap: 0; position: relative; }
     .node { flex: none; display: grid; justify-items: center; gap: 6px; width: 84px; text-align: center; font-size: 0.78rem; color: var(--muted); }
@@ -170,7 +202,8 @@
     <div class="label t-label">Outlets</div>
     <section id="outlets"></section>
 
-    <div class="label t-label" id="covers-label" hidden>Screen</div>
+    <div class="label t-label" id="cinema-label" hidden>Cinema</div>
+    <section id="projectors" hidden></section>
     <section id="covers" hidden></section>
 
     <div class="label t-label">Signal path</div>
@@ -245,6 +278,93 @@
       const sw = $(".switch", c);
       sw.setAttribute("aria-checked", on === null ? "mixed" : String(on));
       sw.setAttribute("aria-label", `${o.name}: ${on ? "on" : "off"}`);
+    }
+
+    const BEAMER = `<svg viewBox="0 0 150 96" aria-hidden="true">
+      <defs><linearGradient id="cone" x1="0" x2="1"><stop offset="0" stop-color="#e6ecff" stop-opacity="0.75"/>
+        <stop offset="0.5" stop-color="#6fe3ff" stop-opacity="0.35"/><stop offset="1" stop-color="#9b8cff" stop-opacity="0"/></linearGradient></defs>
+      <path class="cone" d="M52 52 L150 8 L150 92 Z" fill="url(#cone)"/>
+      <rect class="body" x="4" y="34" width="58" height="40" rx="12"/>
+      <circle class="lens" cx="46" cy="54" r="11"/><circle class="led" cx="16" cy="64" r="3"/>
+      <rect x="10" y="74" width="8" height="5" rx="2" fill="#24304f"/><rect x="48" y="74" width="8" height="5" rx="2" fill="#24304f"/></svg>`;
+    const REMOTE = [["", ""], ["▲", "DPAD_UP"], ["", ""], ["◀", "DPAD_LEFT"], ["OK", "DPAD_CENTER", "ok"], ["▶", "DPAD_RIGHT"],
+                    ["↩", "BACK"], ["▼", "DPAD_DOWN"], ["⌂", "HOME"], ["", ""], ["⏯", "MEDIA_PLAY_PAUSE"], ["", ""]];
+    const projectorPending = new Map();  // projector id -> { want, until }
+
+    function projectorCard(p) {
+      let k = document.querySelector(`.projector[data-id="${CSS.escape(p.id)}"]`);
+      if (!k) {
+        k = el("article", "projector panel t-panel");
+        k.dataset.id = p.id;
+        const beamer = el("div", "beamer");
+        beamer.innerHTML = BEAMER;
+        const info = el("div"), top = el("div", "top"), head = el("div");
+        head.append(el("h2"), el("p", "when"));
+        const sw = el("button", "switch");
+        sw.setAttribute("role", "switch");
+        sw.append(el("span", "knob"));
+        sw.addEventListener("click", () => {
+          const cur = status.projectors.find((x) => x.id === p.id);
+          const want = !(projectorPending.get(p.id)?.want ?? cur.on);
+          projectorPending.set(p.id, { want, until: Date.now() + 20000 });
+          paintProjector(cur);
+          projectorSend(p.id, { on: want });
+        });
+        top.append(head, sw);
+        const apps = el("div", "apps");
+        for (const a of p.apps) {
+          const b = el("button", "", a.name);
+          b.dataset.package = a.package;
+          b.addEventListener("click", () => projectorSend(p.id, { app: a.package }));
+          apps.append(b);
+        }
+        info.append(top, apps);
+        const remote = el("div", "remote");
+        for (const [label, key, cls] of REMOTE) {
+          if (!key) { remote.append(el("span")); continue; }
+          const b = el("button", cls || "", label);
+          b.title = key.toLowerCase().replace(/_/g, " ");
+          b.addEventListener("click", () => projectorSend(p.id, { key }));
+          remote.append(b);
+        }
+        k.append(beamer, info, remote);
+        $("#projectors").append(k);
+      }
+      return k;
+    }
+
+    function paintProjector(p) {
+      const k = projectorCard(p), pend = projectorPending.get(p.id);
+      if (pend && (p.on === pend.want || Date.now() > pend.until)) projectorPending.delete(p.id);
+      const want = projectorPending.get(p.id)?.want;
+      const on = want ?? p.on;
+      k.classList.toggle("on", on === true);
+      k.classList.toggle("away", p.on === null);
+      $("h2", k).textContent = p.name;
+      const app = p.apps.find((a) => a.package === p.app);
+      $(".when", k).textContent = want !== undefined ? (want ? "turning on…" : "turning off…")
+        : p.on === null ? `unreachable${p.error ? " · " + p.error : ""}`
+        : p.on ? `On${app ? " · " + app.name : p.app ? " · " + p.app : ""}${p.cover ? " · the screen follows" : ""}` : "Off";
+      const sw = $(".switch", k);
+      sw.setAttribute("aria-checked", on === null ? "mixed" : String(on));
+      sw.setAttribute("aria-label", `${p.name}: ${on ? "on" : "off"}`);
+      for (const b of k.querySelectorAll(".apps button")) b.classList.toggle("front", p.on === true && b.dataset.package === p.app);
+    }
+
+    async function projectorSend(id, body) {
+      sendPacket(true);
+      try {
+        const r = await fetch(`/api/projectors/${encodeURIComponent(id)}`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+        });
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status);
+      } catch (e) {
+        projectorPending.delete(id);
+        const k = document.querySelector(`.projector[data-id="${CSS.escape(id)}"]`);
+        if (k) flash(k, "failed");
+        return toast(`${id}: ${e.message}`);
+      }
+      for (const ms of [1500, 3500, 6000]) setTimeout(load, ms);  // adb takes a moment, the state follows
     }
 
     function coverCard(c) {
@@ -342,8 +462,11 @@
         paintOutlet(o);
       }
 
-      const covers = s.covers || [];
-      $("#covers").hidden = $("#covers-label").hidden = !covers.length;
+      const covers = s.covers || [], projectors = s.projectors || [];
+      $("#covers").hidden = !covers.length;
+      $("#projectors").hidden = !projectors.length;
+      $("#cinema-label").hidden = !covers.length && !projectors.length;
+      projectors.forEach(paintProjector);
       covers.forEach(paintCover);
 
       const last = $("#last"), lc = s.last_code;
@@ -366,7 +489,7 @@
         $("#updated").textContent = "the hub does not answer, retrying…";
       }
       // every second while a cover moves, so its drawing follows it
-      load.next = setTimeout(load, status && (status.covers || []).some((c) => c.moving) ? 1000 : 5000);
+      load.next = setTimeout(load, status && ((status.covers || []).some((c) => c.moving) || projectorPending.size) ? 1000 : 5000);
     }
 
     async function toggle(id) {

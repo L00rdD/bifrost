@@ -56,7 +56,8 @@ services:
   # Outlet names <-> RF codes (outlets.toml), the dashboard on :8582 and the status JSON for the
   # d-mediaserver home page card
   hub:
-    image: python:3-alpine
+    build: ./hub                # python:3-alpine + adb, for the projector
+    image: bifrost-hub
     container_name: bifrost-hub
     command: ["python", "-u", "/app/hub.py"]
     env_file: .env
@@ -71,6 +72,7 @@ services:
       - ./hub/hub.py:/app/hub.py:ro
       - ./outlets.toml:/app/outlets.toml:ro
       - ./dashboard:/app/dashboard:ro
+      - ./data/adb:/root/.android            # the hub's adb key, allowed once on the projector
     depends_on:
       - mosquitto
     healthcheck:

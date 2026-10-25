@@ -11,6 +11,10 @@ status of the whole thing for the d-mediaserver home page.
   bifrost/cover/<id>/position, /target, /state           <- retained, for HomeKit and the next start
   POST :8582/api/covers/<id>           -> {"position": 100} or {"stop": true}, as /set does
 
+  bifrost/projector/<id>/set  ON / OFF, /key  DPAD_UP..., /app/set  <package> -> over ADB
+  bifrost/projector/<id>/state  ON / OFF, /app  <package>  <- retained, polled every 5 s
+  POST :8582/api/projectors/<id>       -> {"on": true}, {"key": "HOME"} or {"app": "<package>"}
+
 The codes live in outlets.toml only. 433/receive carries both the remote's presses and
 every code the bridge sends, so the state follows whoever switched the outlet.
 
@@ -19,15 +23,21 @@ then stop when the time measured for that distance is over, and follows the remo
 presses the same way. Closing goes all the way to the top, where the motor stops by itself
 and the estimate starts again from a known place.
 
-Standard library only: a minimal MQTT 3.1.1 client (connect, subscribe, QoS 0
-publishes, ping) is all the hub needs."""
+The projector (Google TV) ignores power keys from the Google TV remote protocol, so the hub
+drives it with adb (network debugging on, this hub allowed once on the projector's screen).
+When it turns on, from anywhere, its screen comes down; when it turns off, the screen goes up.
+
+Standard library only, plus the adb binary: a minimal MQTT 3.1.1 client (connect,
+subscribe, QoS 0 publishes, ping) is all the hub needs."""
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
 import socket
 import struct
+import subprocess
 import threading
 import time
 import tomllib
@@ -47,6 +57,13 @@ BY_ID = {o["id"]: o for o in OUTLETS}
 BY_CODE = {str(o[k]): (o["id"], k == "on") for o in OUTLETS for k in ("on", "off")}
 COVER_BY_ID = {c["id"]: c for c in COVERS}
 COVER_CODES = {str(c[k]): (c["id"], k) for c in COVERS for k in ("up", "down", "stop")}
+PROJECTORS = CONFIG.get("projector", [])
+PROJECTOR_BY_ID = {p["id"]: p for p in PROJECTORS}
+ADB = os.environ.get("ADB", "adb")
+PROJECTOR_POLL = 5  # s between two looks at the projector
+# adb shell goes through a shell on the projector: only these ever reach it from a payload
+KEY_RE = re.compile(r"[A-Z][A-Z0-9_]{0,39}")
+PACKAGE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+")
 TOP_MARGIN = 2.0      # s past the computed time when closing: the motor stops itself at the top
 REVERSE_PAUSE = 0.5   # s between stop and the other direction
 ECHO_WINDOW = 3       # s: the bridge repeats what it sends on 433/receive
@@ -55,7 +72,11 @@ log = logging.getLogger("hub")
 state = {"broker": False, "bridge_seen": None, "last_code": None, "outlets": {},
          # pos: % at `since` (None = unknown), dir: +1 opening (down), -1 closing (up), 0 stopped
          "covers": {c["id"]: {"pos": None, "dir": 0, "since": 0.0, "target": None, "run": None, "sent": {}}
-                    for c in COVERS}}
+                    for c in COVERS},
+         # on: True / False / None (unreachable), known: the last on that was not None
+         "projectors": {p["id"]: {"on": None, "known": None, "app": None, "error": None, "at": None} for p in PROJECTORS}}
+pokes = {p["id"]: threading.Event() for p in PROJECTORS}      # look at the projector now
+adb_locks = {p["id"]: threading.Lock() for p in PROJECTORS}   # one adb command at a time
 lock = threading.Lock()
 conn: socket.socket | None = None  # the broker connection, shared with the web server
 send_lock = threading.Lock()       # one packet at a time on it, from either thread
@@ -257,10 +278,116 @@ def on_cover(topic: str, payload: str, retained: bool) -> None:
             c["pos"] = min(100.0, float(value))
 
 
+def adb(projector: dict, *args: str) -> str:
+    """Runs adb against the projector. Raises OSError when it fails or the projector is away."""
+    try:
+        r = subprocess.run([ADB, "-s", projector["adb"], *args], capture_output=True, text=True, timeout=10)
+    except subprocess.TimeoutExpired as e:
+        raise OSError("adb: no answer in 10 s") from e
+    if r.returncode:
+        raise OSError((r.stderr.strip() or r.stdout.strip() or f"adb exit {r.returncode}").splitlines()[-1])
+    return r.stdout
+
+
+def probe(projector: dict) -> tuple[bool, str | None]:
+    """Awake or asleep, and the app in front."""
+    out = adb(projector, "shell", "dumpsys power | grep -m1 mWakefulness=; "
+                                  "dumpsys activity activities | grep -m1 topResumedActivity=")
+    awake = re.search(r"mWakefulness=(\w+)", out)
+    if not awake:
+        raise OSError("adb: no power state from the projector")
+    app = re.search(r"topResumedActivity=\S*\{\S+ u\d+ ([\w.]+)/", out)
+    return awake.group(1) == "Awake", app.group(1) if app else None
+
+
+def projector_seen(pid: str, on: bool | None, app: str | None, error: str | None) -> None:
+    """Keeps what the last look found, publishes what changed, and moves the screen when the
+    projector turns on or off, whoever turned it (Home app, its own remote, the dashboard)."""
+    cfg = PROJECTOR_BY_ID[pid]
+    app = app if on else None
+    with lock:
+        p = state["projectors"][pid]
+        before, changed = p["known"], (p["on"], p["app"]) != (on, app)
+        p.update(on=on, app=app, error=error)
+        if on is not None:
+            p["known"] = on
+        if changed and on is not None:
+            p["at"] = now()
+    if error and changed:
+        log.warning("%s: %s", pid, error)
+    sock = conn
+    if changed and on is not None and sock is not None:
+        try:
+            publish(sock, f"bifrost/projector/{pid}/state", "ON" if on else "OFF", retain=True)
+            publish(sock, f"bifrost/projector/{pid}/app", app or "", retain=True)
+        except OSError as e:
+            log.warning("%s: %s", pid, e)
+    if before is not None and on is not None and on != before:
+        log.info("%s turned %s", pid, "on" if on else "off")
+        if cfg.get("cover") in COVER_BY_ID:
+            move(cfg["cover"], 100 if on else 0)
+
+
+def watch(pid: str) -> None:
+    projector = PROJECTOR_BY_ID[pid]
+    while True:
+        try:
+            with adb_locks[pid]:
+                on, app = probe(projector)
+            projector_seen(pid, on, app, None)
+        except OSError as e:
+            projector_seen(pid, None, None, str(e))
+            try:  # asleep for long, rebooted, or the hub just started: (re)connect
+                subprocess.run([ADB, "connect", projector["adb"]], capture_output=True, timeout=10)
+            except (OSError, subprocess.SubprocessError):
+                pass
+        pokes[pid].wait(PROJECTOR_POLL)
+        pokes[pid].clear()
+
+
+def projector_command(pid: str, on: bool | None = None, key: str | None = None, app: str | None = None) -> None:
+    """Runs one order in the background (adb takes a second or two), then looks again.
+    key and app must have passed KEY_RE and PACKAGE_RE: they end up in a shell command."""
+    projector = PROJECTOR_BY_ID[pid]
+
+    def run():
+        try:
+            with adb_locks[pid]:
+                if on is not None or app:  # SLEEP and WAKEUP, not POWER: sending one twice is harmless
+                    adb(projector, "shell", f"input keyevent KEYCODE_{'WAKEUP' if on or app else 'SLEEP'}")
+                if key:
+                    adb(projector, "shell", f"input keyevent KEYCODE_{key}")
+                if app:
+                    adb(projector, "shell", f"monkey -p {app} -c android.intent.category.LEANBACK_LAUNCHER 1")
+            log.info("%s -> %s", pid, "ON" if on else "OFF" if on is False else key or app)
+        except OSError as e:
+            log.warning("%s: %s", pid, e)
+        pokes[pid].set()
+    threading.Thread(target=run, daemon=True, name=f"projector-{pid}").start()
+
+
+def on_projector(topic: str, payload: str) -> None:
+    parts, value = topic.split("/"), payload.strip()
+    pid, cmd = parts[2], "/".join(parts[3:])
+    if pid not in PROJECTOR_BY_ID:
+        return log.warning("ignored %s (unknown projector)", topic)
+    if cmd == "set" and value.upper() in ("ON", "OFF"):
+        return projector_command(pid, on=value.upper() == "ON")
+    if cmd == "key" and KEY_RE.fullmatch(value.upper()):
+        return projector_command(pid, key=value.upper())
+    if cmd == "app/set" and PACKAGE_RE.fullmatch(value):
+        return projector_command(pid, app=value)
+    log.warning("ignored %s = %r", topic, payload)
+
+
 def on_message(sock: socket.socket, topic: str, payload: str, retained: bool = False) -> None:
     parts = topic.split("/")
     if topic.startswith("bifrost/cover/") and len(parts) == 4:
         return on_cover(topic, payload, retained)
+    if topic.startswith("bifrost/projector/") and len(parts) in (4, 5):
+        if not retained:  # a command left retained by mistake must not replay at each start
+            on_projector(topic, payload)
+        return
     if topic.startswith("bifrost/outlet/") and len(parts) == 4:
         outlet, cmd, value = BY_ID.get(parts[2]), parts[3], payload.strip().upper()
         if cmd == "set":
@@ -311,7 +438,8 @@ def listen() -> None:
                 if kind >> 4 != 2 or ack[1] != 0:
                     raise ConnectionError(f"connection refused (code {ack[1]})")
                 topics = ("433/#", "bifrost/outlet/+/set", "bifrost/outlet/+/state", "bifrost/cover/+/set",
-                          "bifrost/cover/+/position", "bifrost/cover/+/state")
+                          "bifrost/cover/+/position", "bifrost/cover/+/state", "bifrost/projector/+/set",
+                          "bifrost/projector/+/key", "bifrost/projector/+/app/set")
                 _send(sock, _packet(0x82, struct.pack("!H", 1) + b"".join(_str(t) + b"\x00" for t in topics)))
                 with lock:
                     state["broker"] = True
@@ -362,6 +490,10 @@ def snapshot() -> dict:
                         "position": None if (p := _position(c["id"])) is None else round(p),
                         "moving": {1: "down", -1: "up"}.get(state["covers"][c["id"]]["dir"]),
                         "target": state["covers"][c["id"]]["target"]} for c in COVERS],
+            "projectors": [{"id": p["id"], "name": p["name"], "cover": p.get("cover"),
+                            "apps": [{"name": n, "package": a} for n, a in p.get("apps", {}).items()],
+                            **{k: v for k, v in state["projectors"][p["id"]].items() if k != "known"}}
+                           for p in PROJECTORS],
             "last_code": {k: v for k, v in state["last_code"].items() if k != "ts"} if state["last_code"] else None,
         }
 
@@ -392,13 +524,19 @@ class Handler(SimpleHTTPRequestHandler):
         kind = parts[1] if len(parts) == 3 and parts[0] == "api" else None
         outlet = BY_ID.get(parts[2]) if kind == "outlets" else None
         cover = COVER_BY_ID.get(parts[2]) if kind == "covers" else None
-        if not outlet and not cover:
-            return self._json(404, {"error": f"unknown {'cover' if kind == 'covers' else 'outlet'}"})
+        projector = PROJECTOR_BY_ID.get(parts[2]) if kind == "projectors" else None
+        if not outlet and not cover and not projector:
+            return self._json(404, {"error": f"unknown {kind[:-1] if kind in ('covers', 'projectors') else 'outlet'}"})
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
             return self._json(415, {"error": "send JSON"})
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
-            if outlet:
+            if projector:
+                if len(body) != 1 or not (isinstance(body.get("on"), bool)
+                                          or isinstance(body.get("key"), str) and KEY_RE.fullmatch(body["key"])
+                                          or isinstance(body.get("app"), str) and PACKAGE_RE.fullmatch(body["app"])):
+                    raise ValueError
+            elif outlet:
                 on = body["on"]
                 if not isinstance(on, bool):
                     raise ValueError
@@ -410,7 +548,11 @@ class Handler(SimpleHTTPRequestHandler):
                     raise ValueError
         except (ValueError, KeyError, TypeError, AttributeError):
             return self._json(400, {"error": 'expected {"on": true} or {"on": false}' if outlet
-                                    else 'expected {"position": 0-100} or {"stop": true}'})
+                                    else 'expected {"position": 0-100} or {"stop": true}' if cover
+                                    else 'expected {"on": true}, {"key": "HOME"} or {"app": "<package>"}'})
+        if projector:  # adb, not the broker
+            projector_command(projector["id"], **body)
+            return self._json(202, {"id": projector["id"], **body})
         sock = conn
         if sock is None:
             return self._json(503, {"error": "the broker is not connected"})
@@ -439,4 +581,6 @@ class Handler(SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     threading.Thread(target=listen, daemon=True, name="mqtt").start()
+    for p in PROJECTORS:
+        threading.Thread(target=watch, args=(p["id"],), daemon=True, name=f"watch-{p['id']}").start()
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

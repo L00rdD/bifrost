@@ -22,6 +22,8 @@ and talks to the hub:
 | `bifrost/outlet/<id>/set` | `ON` / `OFF` | the hub sends the outlet's code on `433/send` |
 | `bifrost/outlet/<id>/state` | `ON` / `OFF`, retained | from every code seen on `433/receive`: the remote, the Home app, the tracker, `make send` |
 | `bifrost/cover/<id>/set` | `0`-`100`, `OPEN`, `CLOSE`, `STOP` | moves a cover (the projection screen): 0 = rolled up, 100 = open |
+| `bifrost/projector/<id>/set`, `/key`, `/app/set` | `ON` / `OFF`, an Android key (`HOME`, `DPAD_UP`…), an app package | the hub drives the projector over adb |
+| `bifrost/projector/<id>/state`, `/app` | `ON` / `OFF`, the app in front, retained | from the hub's look at the projector every 5 s |
 | `bifrost/cover/<id>/position`, `/target`, `/state` | `0`-`100`, `0`-`100`, `INCREASING` / `DECREASING` / `STOPPED`, retained | where the hub reckons the cover is, for HomeKit and the hub's next start |
 
 Retained means the broker keeps the last state: Homebridge gets it back as soon as it
@@ -123,6 +125,27 @@ reaches the bottom of the screen, past 100 %: the estimate stops at 100.
 
 The dashboard and the home page card get the covers in `/api/status.json`, and
 `POST /api/covers/<id>` takes `{"position": 0-100}` or `{"stop": true}`.
+
+## Adding a projector (Google TV)
+
+The JMGO N1S 4K Mini ignores the power keys of the Google TV remote protocol (the one
+of the phone app), so the hub drives it with adb, which also tells it whether the
+projector is awake and which app is in front. Every 5 s the hub looks; when the
+projector turns on, whoever turned it on, its `cover` comes down, and when it turns
+off the cover goes up.
+
+1. On the projector: Settings > System > About, press Build seven times; then
+   Developer options > USB debugging (network adb, port 5555).
+2. Add a `[[projector]]` to `outlets.toml` (address, `cover`, the `apps` that become
+   HomeKit inputs: `make adb CMD="shell cmd package query-activities -a android.intent.action.MAIN -c android.intent.category.LEANBACK_LAUNCHER --brief"`
+   lists them), give the projector a fixed lease, then `make deploy`.
+3. The projector asks to allow the hub's adb: tick "always", allow. `make adb`
+   shows `device` once it is done (`unauthorized` before). The key stays in `data/adb`.
+
+The Home app gets a TV: on / off, the apps as inputs, and the iPhone's remote
+(control centre) for the arrows, select, back, play/pause. Standby keeps the network
+up on this projector, so it wakes from the Home app; a longer power cut and the hub
+shows it unreachable until it is back.
 
 ## Origin
 

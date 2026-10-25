@@ -20,3 +20,10 @@ down = "5553"
 pulse = 188
 open_time = 0.4
 close_time = 0.5
+
+[[projector]]
+id = "projector"
+name = "Projector"
+adb = "10.0.0.9:5555"
+cover = "screen"
+apps = { Netflix = "com.netflix.ninja", YouTube = "com.google.android.youtube.tv" }

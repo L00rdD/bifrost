@@ -272,6 +272,117 @@ class CoverTest(unittest.TestCase):
         self.assertEqual(hub.snapshot()["last_code"]["via"], "sent")
 
 
+AWAKE = """  mWakefulness=Awake
+      topResumedActivity=ActivityRecord{67da29d u0 com.netflix.ninja/.MainActivity t4231}
+"""
+
+
+class FakeAdb:
+    """Stands for adb: answers dumpsys with `out`, keeps the shell commands, fails when `fail` is set."""
+
+    def __init__(self, out=AWAKE):
+        self.out, self.fail, self.commands, self.done = out, None, [], threading.Event()
+
+    def __call__(self, projector, *args):
+        if self.fail:
+            raise OSError(self.fail)
+        if "dumpsys" not in args[-1]:
+            self.commands.append(args[-1])
+            self.done.set()
+        return self.out
+
+
+class ProjectorTest(unittest.TestCase):
+    def setUp(self):
+        reset()
+        with hub.lock:
+            hub.state["projectors"]["projector"].update(on=None, known=None, app=None, error=None, at=None)
+        self.sock = hub.conn = FakeSock()
+        self.adb, self.real_adb, self.real_move = FakeAdb(), hub.adb, hub.move
+        self.moves = []
+        hub.adb, hub.move = self.adb, lambda cid, target, press=True: self.moves.append((cid, target))
+
+    def tearDown(self):
+        hub.adb, hub.move, hub.conn = self.real_adb, self.real_move, None
+
+    def wait_command(self):
+        self.assertTrue(self.adb.done.wait(2), "no adb command")
+        time.sleep(0.05)
+
+    def look(self):
+        on, app = hub.probe(hub.PROJECTOR_BY_ID["projector"])
+        hub.projector_seen("projector", on, app, None)
+
+    def test_probe_reads_power_and_app(self):
+        self.assertEqual(hub.probe({}), (True, "com.netflix.ninja"))
+        self.adb.out = "  mWakefulness=Asleep\n"
+        self.assertEqual(hub.probe({}), (False, None))
+        self.adb.out = "error: device offline"
+        with self.assertRaises(OSError):
+            hub.probe({})
+
+    def test_state_is_published_retained_when_it_changes(self):
+        self.look()
+        self.look()
+        self.assertEqual(self.sock.published, [("bifrost/projector/projector/state", "ON", True),
+                                               ("bifrost/projector/projector/app", "com.netflix.ninja", True)])
+        p = hub.snapshot()["projectors"][0]
+        self.assertEqual((p["on"], p["app"], p["apps"][0]), (True, "com.netflix.ninja", {"name": "Netflix", "package": "com.netflix.ninja"}))
+
+    def test_turning_on_brings_the_screen_down_and_off_up(self):
+        self.adb.out = "mWakefulness=Asleep"
+        self.look()
+        self.assertEqual(self.moves, [])  # the first look is no change
+        self.adb.out = AWAKE
+        self.look()
+        self.adb.out = "mWakefulness=Dozing"
+        self.look()
+        self.assertEqual(self.moves, [("screen", 100), ("screen", 0)])
+
+    def test_unreachable_between_off_and_on_still_moves_the_screen(self):
+        self.adb.out = "mWakefulness=Asleep"
+        self.look()
+        hub.projector_seen("projector", None, None, "adb: no answer in 10 s")
+        self.assertIsNone(hub.snapshot()["projectors"][0]["on"])
+        self.adb.out = AWAKE
+        self.look()
+        self.assertEqual(self.moves, [("screen", 100)])
+
+    def test_set_wakes_and_sleeps_over_adb(self):
+        hub.on_message(self.sock, "bifrost/projector/projector/set", "ON")
+        self.wait_command()
+        self.adb.done.clear()
+        hub.on_message(self.sock, "bifrost/projector/projector/set", "off")
+        self.wait_command()
+        self.assertEqual(self.adb.commands, ["input keyevent KEYCODE_WAKEUP", "input keyevent KEYCODE_SLEEP"])
+
+    def test_app_wakes_the_projector_then_launches(self):
+        hub.on_message(self.sock, "bifrost/projector/projector/app/set", "com.netflix.ninja")
+        self.wait_command()
+        self.assertEqual(self.adb.commands, ["input keyevent KEYCODE_WAKEUP",
+                                             "monkey -p com.netflix.ninja -c android.intent.category.LEANBACK_LAUNCHER 1"])
+
+    def test_key(self):
+        hub.on_message(self.sock, "bifrost/projector/projector/key", "dpad_up")
+        self.wait_command()
+        self.assertEqual(self.adb.commands, ["input keyevent KEYCODE_DPAD_UP"])
+
+    def test_nothing_reaches_the_shell_unchecked(self):
+        for topic, payload in (("key", "HOME; reboot"), ("key", "12"), ("app/set", "x; rm -rf /"), ("app/set", "netflix"),
+                               ("set", "toggle")):
+            hub.on_message(self.sock, f"bifrost/projector/projector/{topic}", payload)
+        hub.on_message(self.sock, "bifrost/projector/nope/set", "ON")
+        hub.on_message(self.sock, "bifrost/projector/projector/set", "ON", retained=True)  # left on the broker
+        time.sleep(0.2)
+        self.assertEqual(self.adb.commands, [])
+
+    def test_adb_failure_is_logged_not_raised(self):
+        self.adb.fail = "adb: device unauthorized"
+        hub.on_message(self.sock, "bifrost/projector/projector/set", "ON")
+        time.sleep(0.2)
+        self.assertEqual(self.adb.commands, [])
+
+
 class WebTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -340,6 +451,20 @@ class WebTest(unittest.TestCase):
             with self.subTest(body=body):
                 self.assertEqual(self.post("/api/covers/screen", body)[0], 400)
         self.assertEqual(self.sock.published, [])
+
+    def test_post_drives_the_projector(self):
+        fake, real = FakeAdb(), hub.adb
+        hub.adb = fake
+        try:
+            self.assertEqual(self.post("/api/projectors/projector", '{"key": "HOME"}'), (202, {"id": "projector", "key": "HOME"}))
+            self.assertTrue(fake.done.wait(2))
+            self.assertEqual(fake.commands, ["input keyevent KEYCODE_HOME"])
+            for body in ('{"key": "HOME; reboot"}', '{"app": "a b"}', '{"on": 1}', '{"on": true, "key": "HOME"}', "{}"):
+                with self.subTest(body=body):
+                    self.assertEqual(self.post("/api/projectors/projector", body)[0], 400)
+            self.assertEqual(self.post("/api/projectors/nope", '{"on": true}'), (404, {"error": "unknown projector"}))
+        finally:
+            hub.adb = real
 
     def test_post_has_no_cors(self):
         req = urllib.request.Request(self.url + "/api/outlets/fan", data=b'{"on": false}', method="POST",

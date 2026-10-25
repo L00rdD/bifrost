@@ -36,12 +36,22 @@ class RenderTest(unittest.TestCase):
 
     def test_cover_is_a_window_covering(self):
         _, out, config = self.render()
-        self.assertIn("2 outlet(s), 1 cover(s)", out)
+        self.assertIn("2 outlet(s), 1 cover(s), 1 projector(s)", out)
         screen = config["accessories"][2]
         self.assertEqual((screen["type"], screen["name"]), ("windowCovering", "Screen"))
         self.assertEqual(screen["topics"]["setTargetPosition"], "bifrost/cover/screen/set")
         self.assertEqual(screen["topics"]["getPositionState"], "bifrost/cover/screen/state")
         self.assertNotIn("5553", json.dumps(config))
+
+    def test_projector_is_a_television_with_its_apps(self):
+        _, out, config = self.render()
+        self.assertIn("1 projector(s)", out)
+        tv = config["accessories"][3]
+        self.assertEqual((tv["type"], tv["name"], tv["onValue"]), ("television", "Projector", "ON"))
+        self.assertEqual(tv["inputs"][0], {"name": "Netflix", "value": "com.netflix.ninja"})
+        self.assertEqual(tv["topics"]["setRemoteKey"], "bifrost/projector/projector/key")
+        self.assertEqual(len(tv["remoteKeyValues"]), 16)
+        self.assertNotIn("10.0.0.9", json.dumps(config))  # the projector's address stays with the hub
 
     def test_missing_env_values(self):
         code, out, config = self.render(env="MQTT_USER=u\n")

@@ -1,5 +1,5 @@
 """Fill homebridge/config.template.json with the values of .env and add one accessory per
-outlet and cover of outlets.toml -> homebridge/config.json.
+outlet, cover and projector of outlets.toml -> homebridge/config.json.
 
 The repo is the source of truth: `make deploy` overwrites the config on the Pi,
 so edit the template or outlets.toml here rather than the Homebridge UI's config editor."""
@@ -43,5 +43,23 @@ for cover in devices.get("cover", []):
                    "getCurrentPosition": f"{base}/position", "getPositionState": f"{base}/state"},
         "positionStateValues": ["DECREASING", "INCREASING", "STOPPED"],
     })
+for projector in devices.get("projector", []):
+    base = f"bifrost/projector/{projector['id']}"
+    config["accessories"].append({
+        **mqtt,
+        "type": "television",  # its apps are the inputs; the iPhone's remote (control centre) sends the keys
+        "name": projector["name"],
+        "topics": {"setActive": f"{base}/set", "getActive": f"{base}/state", "setActiveInput": f"{base}/app/set",
+                   "getActiveInput": f"{base}/app", "setRemoteKey": f"{base}/key"},
+        "inputs": [{"name": name, "value": package} for name, package in projector.get("apps", {}).items()],
+        "onValue": "ON",
+        "offValue": "OFF",
+        # HomeKit's keys in its order (rewind, fast forward, next, previous, up, down, left, right,
+        # select, back, exit, play/pause, 3 unused, info) as Android key names: the hub sends KEYCODE_<name>
+        "remoteKeyValues": ["MEDIA_REWIND", "MEDIA_FAST_FORWARD", "MEDIA_NEXT", "MEDIA_PREVIOUS", "DPAD_UP", "DPAD_DOWN",
+                            "DPAD_LEFT", "DPAD_RIGHT", "DPAD_CENTER", "BACK", "HOME", "MEDIA_PLAY_PAUSE", "UNUSED_12",
+                            "UNUSED_13", "UNUSED_14", "MENU"],
+    })
 (root / "homebridge/config.json").write_text(json.dumps(config, indent=2) + "\n")
-print(f"homebridge/config.json: {len(devices.get('outlet', []))} outlet(s), {len(devices.get('cover', []))} cover(s)")
+print(f"homebridge/config.json: {len(devices.get('outlet', []))} outlet(s), {len(devices.get('cover', []))} cover(s), "
+      f"{len(devices.get('projector', []))} projector(s)")

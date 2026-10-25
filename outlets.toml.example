@@ -26,3 +26,13 @@ down = "1234562"
 pulse = 188               # us, the TE of the Flipper capture (omit for 350, protocol 1)
 open_time = 38            # s: down from the top to the projection height
 close_time = 38           # s: up from the projection height to the top
+
+# A Google TV projector, over adb: Settings > System > Developer options > Network debugging
+# (or "USB debugging" with port 5555 open), then allow the Pi once on the screen (make adb).
+#   bifrost/projector/<id>/set  ON / OFF   /key  HOME, DPAD_UP...   /app/set  <package>
+[[projector]]
+id = "projector"
+name = "Projector"
+adb = "192.168.1.19:5555"
+cover = "screen"            # optional: down when the projector turns on, up when it turns off
+apps = { Netflix = "com.netflix.ninja", YouTube = "com.google.android.youtube.tv" }   # HomeKit inputs
