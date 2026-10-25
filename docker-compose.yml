@@ -1,0 +1,83 @@
+# Home control: MQTT broker + Homebridge (HomeKit), next to d-mediaserver on the Pi.
+# Start with: make deploy. Logs: make logs
+# The healthchecks and the autoheal label only matter if d-mediaserver's autoheal runs
+# (it restarts the containers labelled autoheal=true that turn unhealthy).
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: mosquitto
+    env_file: .env
+    # the password file comes from .env, so changing MQTT_PASS only needs a restart
+    command: >
+      sh -c 'rm -f /mosquitto/data/passwd && mosquitto_passwd -b -c /mosquitto/data/passwd "$$MQTT_USER" "$$MQTT_PASS"
+      && chown mosquitto:mosquitto /mosquitto/data/passwd && chmod 0700 /mosquitto/data/passwd
+      && exec mosquitto -c /mosquitto/config/mosquitto.conf'
+    ports:
+      - 1883:1883
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./data/mosquitto:/mosquitto/data
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -u \"$$MQTT_USER\" -P \"$$MQTT_PASS\" -t '$$SYS/broker/uptime' -C 1 -W 5 >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    labels:
+      autoheal: "true"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  homebridge:
+    image: homebridge/homebridge:latest
+    container_name: homebridge
+    network_mode: host          # HomeKit discovery (mDNS) needs the host network; UI on :8581
+    environment:
+      - TZ=${TZ:-Europe/Paris}
+    volumes:
+      - ./data/homebridge:/homebridge
+    depends_on:
+      - mosquitto
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "-o", "/dev/null", "http://localhost:8581"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s       # first start installs Homebridge and its plugins
+    labels:
+      autoheal: "true"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # Outlet names <-> RF codes (outlets.toml), and the status JSON for the d-mediaserver home page card
+  hub:
+    image: python:3-alpine
+    container_name: bifrost-hub
+    command: ["python", "-u", "/app/hub.py"]
+    env_file: .env
+    environment:
+      - TZ=${TZ:-Europe/Paris}
+    extra_hosts:
+      - host.docker.internal:host-gateway   # Homebridge runs on the host network
+    ports:
+      - 8582:8582
+    volumes:
+      - ./hub/hub.py:/app/hub.py:ro
+      - ./outlets.toml:/app/outlets.toml:ro
+    depends_on:
+      - mosquitto
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8582/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    labels:
+      autoheal: "true"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }

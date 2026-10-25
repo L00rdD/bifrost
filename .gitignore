@@ -1,0 +1,8 @@
+.env
+data/
+homebridge/config.json
+firmware/rf-bridge/secrets.h
+firmware/rf-bridge/build/
+.DS_Store
+__pycache__/
+outlets.toml

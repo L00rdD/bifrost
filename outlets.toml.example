@@ -1,0 +1,13 @@
+# Copy to outlets.toml and fill in. Never commit outlets.toml: anyone in radio range
+# could switch the outlets with these codes.
+#
+# The RF outlets, the only place their codes live. Everything else uses the id:
+#   bifrost/outlet/<id>/set    ON / OFF  -> the hub sends the code to the RF bridge
+#   bifrost/outlet/<id>/state  ON / OFF  <- retained, from every code heard or sent
+# Homebridge gets one accessory per outlet (make deploy). Find codes with make sniff.
+
+[[outlet]]
+id = "grow-lamp"          # used in topics and by Sapling Sunrise ([light] outlet)
+name = "Grow lamp"        # shown in the Home app and on the home page card
+on = "1234567"            # the codes of the remote's ON and OFF buttons
+off = "1234568"

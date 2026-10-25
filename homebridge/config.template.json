@@ -1,0 +1,16 @@
+{
+  "bridge": {
+    "name": "Bifrost",
+    "username": "${HB_USERNAME}",
+    "port": 51826,
+    "pin": "${HB_PIN}"
+  },
+  "accessories": [],
+  "platforms": [
+    {
+      "platform": "config",
+      "name": "Config",
+      "port": 8581
+    }
+  ]
+}
