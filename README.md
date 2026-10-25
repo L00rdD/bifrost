@@ -131,8 +131,9 @@ The dashboard and the home page card get the covers in `/api/status.json`, and
 The JMGO N1S 4K Mini ignores the power keys of the Google TV remote protocol (the one
 of the phone app), so the hub drives it with adb, which also tells it whether the
 projector is awake and which app is in front. Every 5 s the hub looks; when the
-projector turns on, whoever turned it on, its `cover` comes down, and when it turns
-off the cover goes up.
+projector turns on, whoever turned it on, its `cover` comes down; once it has been
+off for `close_after` (5 min), the cover goes up. Back on before that, the screen
+stays: a change of mind does not roll it up and down.
 
 1. On the projector: Settings > System > About, press Build seven times; then
    Developer options > USB debugging (network adb, port 5555).

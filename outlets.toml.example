@@ -34,5 +34,6 @@ close_time = 38           # s: up from the projection height to the top
 id = "projector"
 name = "Projector"
 adb = "192.168.1.19:5555"
-cover = "screen"            # optional: down when the projector turns on, up when it turns off
+cover = "screen"            # optional: down when the projector turns on, up once it has been off
+close_after = 300           # s: that long off before the screen goes up (300 if omitted)
 apps = { Netflix = "com.netflix.ninja", YouTube = "com.google.android.youtube.tv" }   # HomeKit inputs

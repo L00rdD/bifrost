@@ -26,4 +26,5 @@ id = "projector"
 name = "Projector"
 adb = "10.0.0.9:5555"
 cover = "screen"
+close_after = 0.3
 apps = { Netflix = "com.netflix.ninja", YouTube = "com.google.android.youtube.tv" }

@@ -296,7 +296,10 @@ class ProjectorTest(unittest.TestCase):
     def setUp(self):
         reset()
         with hub.lock:
-            hub.state["projectors"]["projector"].update(on=None, known=None, app=None, error=None, at=None)
+            hub.state["projectors"]["projector"].update(on=None, known=None, app=None, error=None, at=None, closes_at=None)
+        for t in hub.close_timers.values():
+            t.cancel()
+        hub.close_timers.clear()
         self.sock = hub.conn = FakeSock()
         self.adb, self.real_adb, self.real_move = FakeAdb(), hub.adb, hub.move
         self.moves = []
@@ -329,19 +332,56 @@ class ProjectorTest(unittest.TestCase):
         p = hub.snapshot()["projectors"][0]
         self.assertEqual((p["on"], p["app"], p["apps"][0]), (True, "com.netflix.ninja", {"name": "Netflix", "package": "com.netflix.ninja"}))
 
-    def test_turning_on_brings_the_screen_down_and_off_up(self):
+    def off(self):
         self.adb.out = "mWakefulness=Asleep"
         self.look()
-        self.assertEqual(self.moves, [])  # the first look is no change
+
+    def on(self):
         self.adb.out = AWAKE
         self.look()
-        self.adb.out = "mWakefulness=Dozing"
-        self.look()
+
+    def test_turning_on_brings_the_screen_down_and_off_up_after_a_while(self):
+        with hub.lock:
+            hub.state["covers"]["screen"]["pos"] = 0.0
+        self.off()
+        self.assertEqual(self.moves, [])  # the first look is no change
+        self.on()
+        self.assertEqual(self.moves, [("screen", 100)])
+        self.off()
+        self.assertEqual(self.moves, [("screen", 100)])  # not yet: close_after is 0.3 s here
+        self.assertIsNotNone(hub.snapshot()["projectors"][0]["closes_at"])
+        time.sleep(0.45)
         self.assertEqual(self.moves, [("screen", 100), ("screen", 0)])
+        self.assertIsNone(hub.snapshot()["projectors"][0]["closes_at"])
+
+    def test_back_on_before_the_delay_keeps_the_screen_down(self):
+        self.off()
+        self.on()
+        self.off()
+        time.sleep(0.1)
+        self.on()
+        time.sleep(0.4)
+        self.assertEqual(self.moves, [("screen", 100), ("screen", 100)])  # the second one does not move: already there
+        self.assertIsNone(hub.snapshot()["projectors"][0]["closes_at"])
+
+    def test_off_at_start_with_the_screen_down_closes_it_later(self):
+        with hub.lock:
+            hub.state["covers"]["screen"]["pos"] = 100.0
+        self.off()
+        time.sleep(0.45)
+        self.assertEqual(self.moves, [("screen", 0)])
+
+    def test_off_at_start_with_the_screen_up_does_nothing(self):
+        with hub.lock:
+            hub.state["covers"]["screen"]["pos"] = 0.0
+        self.off()
+        time.sleep(0.45)
+        self.assertEqual(self.moves, [])
 
     def test_unreachable_between_off_and_on_still_moves_the_screen(self):
-        self.adb.out = "mWakefulness=Asleep"
-        self.look()
+        with hub.lock:
+            hub.state["covers"]["screen"]["pos"] = 0.0
+        self.off()
         hub.projector_seen("projector", None, None, "adb: no answer in 10 s")
         self.assertIsNone(hub.snapshot()["projectors"][0]["on"])
         self.adb.out = AWAKE

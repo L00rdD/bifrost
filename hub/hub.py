@@ -25,7 +25,8 @@ and the estimate starts again from a known place.
 
 The projector (Google TV) ignores power keys from the Google TV remote protocol, so the hub
 drives it with adb (network debugging on, this hub allowed once on the projector's screen).
-When it turns on, from anywhere, its screen comes down; when it turns off, the screen goes up.
+When it turns on, from anywhere, its screen comes down; when it has been off for 5 minutes,
+the screen goes up (turned back on before that, the screen stays).
 
 Standard library only, plus the adb binary: a minimal MQTT 3.1.1 client (connect,
 subscribe, QoS 0 publishes, ping) is all the hub needs."""
@@ -61,6 +62,7 @@ PROJECTORS = CONFIG.get("projector", [])
 PROJECTOR_BY_ID = {p["id"]: p for p in PROJECTORS}
 ADB = os.environ.get("ADB", "adb")
 PROJECTOR_POLL = 5  # s between two looks at the projector
+CLOSE_AFTER = 300   # s off before the screen goes up: a change of mind does not roll it up and down
 # adb shell goes through a shell on the projector: only these ever reach it from a payload
 KEY_RE = re.compile(r"[A-Z][A-Z0-9_]{0,39}")
 PACKAGE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+")
@@ -74,7 +76,9 @@ state = {"broker": False, "bridge_seen": None, "last_code": None, "outlets": {},
          "covers": {c["id"]: {"pos": None, "dir": 0, "since": 0.0, "target": None, "run": None, "sent": {}}
                     for c in COVERS},
          # on: True / False / None (unreachable), known: the last on that was not None
-         "projectors": {p["id"]: {"on": None, "known": None, "app": None, "error": None, "at": None} for p in PROJECTORS}}
+         # closes_at: when the screen goes up, the projector being off since close_after
+         "projectors": {p["id"]: {"on": None, "known": None, "app": None, "error": None, "at": None, "closes_at": None}
+                        for p in PROJECTORS}}
 pokes = {p["id"]: threading.Event() for p in PROJECTORS}      # look at the projector now
 adb_locks = {p["id"]: threading.Lock() for p in PROJECTORS}   # one adb command at a time
 lock = threading.Lock()
@@ -322,10 +326,54 @@ def projector_seen(pid: str, on: bool | None, app: str | None, error: str | None
             publish(sock, f"bifrost/projector/{pid}/app", app or "", retain=True)
         except OSError as e:
             log.warning("%s: %s", pid, e)
-    if before is not None and on is not None and on != before:
+    if on is None or cfg.get("cover") not in COVER_BY_ID:
+        return
+    if before is not None and on != before:
         log.info("%s turned %s", pid, "on" if on else "off")
-        if cfg.get("cover") in COVER_BY_ID:
-            move(cfg["cover"], 100 if on else 0)
+        if on:
+            _cancel_close(pid)
+            move(cfg["cover"], 100)
+        else:
+            _close_later(pid)
+    elif before is None and not on:  # the hub (re)started with the projector off: a close may have been lost
+        with lock:
+            down = _position(cfg["cover"]) != 0
+        if down:
+            _close_later(pid)
+
+
+close_timers: dict[str, threading.Timer] = {}
+
+
+def _cancel_close(pid: str) -> None:
+    with lock:
+        timer = close_timers.pop(pid, None)
+        state["projectors"][pid]["closes_at"] = None
+    if timer:
+        timer.cancel()
+        log.info("%s back on: the screen stays", pid)
+
+
+def _close_later(pid: str) -> None:
+    delay = PROJECTOR_BY_ID[pid].get("close_after", CLOSE_AFTER)
+
+    def close():
+        with lock:
+            if close_timers.get(pid) is not timer or state["projectors"][pid]["known"] is not False:
+                return
+            del close_timers[pid]
+            state["projectors"][pid]["closes_at"] = None
+        log.info("%s off for %s s: the screen goes up", pid, delay)
+        move(PROJECTOR_BY_ID[pid]["cover"], 0)
+
+    timer = threading.Timer(delay, close)
+    timer.daemon = True
+    with lock:
+        if old := close_timers.get(pid):
+            old.cancel()
+        close_timers[pid] = timer
+        state["projectors"][pid]["closes_at"] = time.time() + delay
+    timer.start()
 
 
 def watch(pid: str) -> None:
@@ -492,7 +540,9 @@ def snapshot() -> dict:
                         "target": state["covers"][c["id"]]["target"]} for c in COVERS],
             "projectors": [{"id": p["id"], "name": p["name"], "cover": p.get("cover"),
                             "apps": [{"name": n, "package": a} for n, a in p.get("apps", {}).items()],
-                            **{k: v for k, v in state["projectors"][p["id"]].items() if k != "known"}}
+                            **{k: v for k, v in state["projectors"][p["id"]].items() if k not in ("known", "closes_at")},
+                            "closes_at": (datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
+                                          if (t := state["projectors"][p["id"]]["closes_at"]) else None)}
                            for p in PROJECTORS],
             "last_code": {k: v for k, v in state["last_code"].items() if k != "ts"} if state["last_code"] else None,
         }

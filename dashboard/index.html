@@ -344,7 +344,8 @@
       const app = p.apps.find((a) => a.package === p.app);
       $(".when", k).textContent = want !== undefined ? (want ? "turning on…" : "turning off…")
         : p.on === null ? `unreachable${p.error ? " · " + p.error : ""}`
-        : p.on ? `On${app ? " · " + app.name : p.app ? " · " + p.app : ""}${p.cover ? " · the screen follows" : ""}` : "Off";
+        : p.on ? `On${app ? " · " + app.name : p.app ? " · " + p.app : ""}${p.cover ? " · the screen follows" : ""}`
+        : p.closes_at ? `Off · the screen goes up at ${new Date(p.closes_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Off";
       const sw = $(".switch", k);
       sw.setAttribute("aria-checked", on === null ? "mixed" : String(on));
       sw.setAttribute("aria-label", `${p.name}: ${on ? "on" : "off"}`);
