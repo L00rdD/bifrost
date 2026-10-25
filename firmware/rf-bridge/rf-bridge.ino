@@ -81,13 +81,22 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   payload[length] = '\0'; // Null-terminate the payload to convert to string
   String message = String((char*)payload);
   if (String(topic) == "433/send") {
-    unsigned long code = message.toInt();
+    // "<code>" or "<code> <pulse us>": protocol 1 is 350 us, some remotes are faster (the screen's: 188)
+    int space = message.indexOf(' ');
+    unsigned long code = message.substring(0, space < 0 ? message.length() : space).toInt();
+    long pulse = space < 0 ? 0 : message.substring(space + 1).toInt();
     if (code > 0) {
+      rfSender.setProtocol(1); // back to 350 us
+      if (pulse > 0) {
+        rfSender.setPulseLength(pulse);
+      }
       rfSender.send(code, 24); // Send RF code with 24-bit length
       // Echo it on 433/receive, the topic Homebridge and the status card follow: whoever sends a
       // code (Home app, Sapling Sunrise, mosquitto_pub), everyone sees the new state. The receiver
       // hears our own transmission too; marking it as just received keeps that from a second report.
-      client.publish("433/receive", message.c_str());
+      char echo[16];
+      snprintf(echo, sizeof(echo), "%lu", code);
+      client.publish("433/receive", echo);
       lastReceivedCode = code;
       lastReceivedAt = millis();
       Serial.print("Sent RF code: ");

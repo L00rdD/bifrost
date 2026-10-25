@@ -11,3 +11,17 @@ id = "grow-lamp"          # used in topics and by Sapling Sunrise ([light] outle
 name = "Grow lamp"        # shown in the Home app and on the home page card
 on = "1234567"            # the codes of the remote's ON and OFF buttons
 off = "1234568"
+
+# A motorised cover, the projection screen: up / stop / down buttons, no position from the motor.
+# The hub times it: 0 % = rolled up at the top, 100 % = open at the projection height.
+#   bifrost/cover/<id>/set   0-100 / OPEN / CLOSE / STOP
+# Time it from a Flipper "Read RAW" of down then stop (or up then stop), first frame to first frame.
+[[cover]]
+id = "screen"
+name = "Projection screen"
+up = "1234560"
+stop = "1234561"
+down = "1234562"
+pulse = 188               # us, the TE of the Flipper capture (omit for 350, protocol 1)
+open_time = 25.7          # s: down from the top to the projection height
+close_time = 26.7         # s: up from the projection height to the top

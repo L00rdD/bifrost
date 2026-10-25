@@ -34,6 +34,15 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(fan["topics"], {"setOn": "bifrost/outlet/fan/set", "getOn": "bifrost/outlet/fan/state"})
         self.assertNotIn("3333", json.dumps(config))  # the codes stay with the hub
 
+    def test_cover_is_a_window_covering(self):
+        _, out, config = self.render()
+        self.assertIn("2 outlet(s), 1 cover(s)", out)
+        screen = config["accessories"][2]
+        self.assertEqual((screen["type"], screen["name"]), ("windowCovering", "Screen"))
+        self.assertEqual(screen["topics"]["setTargetPosition"], "bifrost/cover/screen/set")
+        self.assertEqual(screen["topics"]["getPositionState"], "bifrost/cover/screen/state")
+        self.assertNotIn("5553", json.dumps(config))
+
     def test_missing_env_values(self):
         code, out, config = self.render(env="MQTT_USER=u\n")
         self.assertNotEqual(code, 0)

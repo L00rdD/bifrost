@@ -10,3 +10,13 @@ id = "fan"
 name = "Fan"
 on = "3333"
 off = "4444"
+
+[[cover]]
+id = "screen"
+name = "Screen"
+up = "5551"
+stop = "5552"
+down = "5553"
+pulse = 188
+open_time = 0.4
+close_time = 0.5

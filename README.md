@@ -21,6 +21,8 @@ and talks to the hub:
 | :--- | :--- | :--- |
 | `bifrost/outlet/<id>/set` | `ON` / `OFF` | the hub sends the outlet's code on `433/send` |
 | `bifrost/outlet/<id>/state` | `ON` / `OFF`, retained | from every code seen on `433/receive`: the remote, the Home app, the tracker, `make send` |
+| `bifrost/cover/<id>/set` | `0`-`100`, `OPEN`, `CLOSE`, `STOP` | moves a cover (the projection screen): 0 = rolled up, 100 = open |
+| `bifrost/cover/<id>/position`, `/target`, `/state` | `0`-`100`, `0`-`100`, `INCREASING` / `DECREASING` / `STOPPED`, retained | where the hub reckons the cover is, for HomeKit and the hub's next start |
 
 Retained means the broker keeps the last state: Homebridge gets it back as soon as it
 restarts, and a client can confirm a switch by waiting for a fresh state.
@@ -40,7 +42,7 @@ All optional for d-mediaserver: its home page shows the Bifrost card only when
 
 | Topic | Direction | Payload |
 | :--- | :--- | :--- |
-| `433/send` | to the bridge | a decimal code, sent as 24 bits, protocol 1 |
+| `433/send` | to the bridge | a decimal code, sent as 24 bits, protocol 1; `<code> <pulse>` for a remote faster or slower than its 350 us (`TE` of a Flipper capture) |
 | `433/receive` | from the bridge | a decimal code heard on the air (one per press), and every code it sends: whoever switches an outlet, Homebridge sees the new state |
 | `433/receive/raw` | from the bridge | the same code with its bits, protocol and pulse length |
 | `433/status` | from the bridge | `boot`, then `online` every 10 s |
@@ -95,6 +97,31 @@ sends. The outlet itself may still miss one, out of range.
 The repo is the source of truth for the Homebridge config: `make deploy`
 overwrites the one on the Pi, so edits made in the Homebridge UI's config editor
 are lost at the next deploy (the accessories come from `outlets.toml`). Plugins installed from the UI stay.
+
+## Adding a cover (projection screen)
+
+A cover has up, stop and down buttons and does not report its position: the hub
+times it. Opening sends down, then stop once the time measured for that distance
+is over; closing sends up and lets the motor run into the top a little longer
+(`TOP_MARGIN`, 2 s), where it stops by itself and the estimate starts again from
+0. A new order mid-move goes through stop first. The remote's presses are
+followed the same way (down then stop: the hub knows where it stopped).
+
+1. With a Flipper Zero, *Sub-GHz > Read* each button: `Key` is the code in hex
+   (`printf '%d' 0x1F37D4`), `TE` the pulse length.
+2. Screen at the top, *Read RAW*, press down then stop at the projection height;
+   again from there with up then stop. The time from the first down (or up) frame
+   to the first stop frame is `open_time` (`close_time`).
+3. Add a `[[cover]]` to `outlets.toml` (see the example), `make flash` if the bridge
+   predates `<code> <pulse>`, then `make deploy`: the Home app gets a blind,
+   100 % open = the screen down.
+
+The first move after the hub starts with no position known (retained on the
+broker otherwise) goes all the way up first. A down on the remote left to run
+reaches the bottom of the screen, past 100 %: the estimate stops at 100.
+
+The dashboard and the home page card get the covers in `/api/status.json`, and
+`POST /api/covers/<id>` takes `{"position": 0-100}` or `{"stop": true}`.
 
 ## Origin
 

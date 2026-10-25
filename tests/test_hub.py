@@ -3,6 +3,7 @@ import os
 import struct
 import sys
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -39,6 +40,29 @@ class FakeSock:
 def reset():
     with hub.lock:
         hub.state.update(broker=True, bridge_seen=None, last_code=None, outlets={})
+        for c in hub.state["covers"].values():
+            if c["run"]:
+                c["run"].set()
+            c.clear()
+            c.update(pos=None, dir=0, since=0.0, target=None, run=None, sent={})
+
+
+hub.TOP_MARGIN, hub.REVERSE_PAUSE = 0.1, 0.05  # the test screen runs in 0.4 s down, 0.5 s up
+
+
+def settle(timeout=3):
+    """Waits for the screen's move to be over."""
+    end = time.time() + timeout
+    while time.time() < end:
+        with hub.lock:
+            if not hub.state["covers"]["screen"]["run"]:
+                return
+        time.sleep(0.02)
+    raise AssertionError("the screen is still moving")
+
+
+def screen():
+    return hub.snapshot()["covers"][0]
 
 
 class MessageTest(unittest.TestCase):
@@ -83,6 +107,136 @@ class MessageTest(unittest.TestCase):
         self.assertFalse(hub.snapshot()["bridge"]["online"])
         hub.on_message(self.sock, "433/status", "online")
         self.assertTrue(hub.snapshot()["bridge"]["online"])
+
+
+class CoverTest(unittest.TestCase):
+    def setUp(self):
+        reset()
+        self.sock = hub.conn = FakeSock()
+
+    def tearDown(self):
+        reset()
+        hub.conn = None
+
+    def sent(self):
+        return [p for t, p, _ in self.sock.published if t == "433/send"]
+
+    def published(self, topic):
+        return [p for t, p, _ in self.sock.published if t == f"bifrost/cover/screen/{topic}"]
+
+    def at(self, pos):
+        with hub.lock:
+            hub.state["covers"]["screen"]["pos"] = float(pos)
+
+    def test_open_sends_down_then_stop_after_the_measured_time(self):
+        self.at(0)
+        start = time.time()
+        hub.on_message(self.sock, "bifrost/cover/screen/set", "100")
+        time.sleep(0.2)
+        self.assertEqual(screen()["moving"], "down")
+        self.assertAlmostEqual(screen()["position"], 50, delta=10)
+        settle()
+        self.assertAlmostEqual(time.time() - start, 0.4, delta=0.1)
+        self.assertEqual(self.sent(), ["5553 188", "5552 188"])  # down, stop, with the remote's pulse
+        self.assertEqual((screen()["position"], screen()["moving"]), (100, None))
+        self.assertEqual(self.published("state"), ["INCREASING", "STOPPED"])
+        self.assertEqual(self.published("position")[-1], "100")
+        self.assertTrue(all(r for t, _, r in self.sock.published if t.startswith("bifrost/cover/")))
+
+    def test_partial_move_takes_its_share_of_the_time(self):
+        self.at(100)
+        start = time.time()
+        hub.on_message(self.sock, "bifrost/cover/screen/set", "50")
+        settle()
+        self.assertAlmostEqual(time.time() - start, 0.25, delta=0.08)  # half of close_time
+        self.assertEqual(self.sent(), ["5551 188", "5552 188"])
+        self.assertEqual(screen()["position"], 50)
+
+    def test_close_runs_past_the_time_into_the_top(self):
+        self.at(100)
+        start = time.time()
+        hub.on_message(self.sock, "bifrost/cover/screen/set", "CLOSE")
+        settle()
+        self.assertAlmostEqual(time.time() - start, 0.5 + hub.TOP_MARGIN, delta=0.08)
+        self.assertEqual(screen()["position"], 0)
+
+    def test_unknown_position_goes_up_first(self):
+        hub.on_message(self.sock, "bifrost/cover/screen/set", "OPEN")
+        settle()
+        self.assertEqual(self.sent(), ["5551 188", "5552 188", "5553 188", "5552 188"])
+        self.assertEqual(screen()["position"], 100)
+
+    def test_a_new_order_reverses_through_stop(self):
+        self.at(0)
+        hub.move("screen", 100)
+        time.sleep(0.2)
+        hub.move("screen", 0)
+        settle()
+        self.assertEqual(self.sent(), ["5553 188", "5552 188", "5551 188", "5552 188"])
+        self.assertEqual(screen()["position"], 0)
+
+    def test_stop(self):
+        self.at(0)
+        hub.move("screen", 100)
+        time.sleep(0.2)
+        hub.on_message(self.sock, "bifrost/cover/screen/set", "stop")
+        settle()
+        self.assertEqual(self.sent(), ["5553 188", "5552 188"])
+        self.assertAlmostEqual(screen()["position"], 50, delta=10)
+        self.assertEqual(screen()["target"], screen()["position"])  # HomeKit: no move left
+
+    def test_bad_set_is_ignored(self):
+        for value in ("101", "-1", "half"):
+            hub.on_message(self.sock, "bifrost/cover/screen/set", value)
+        hub.on_message(self.sock, "bifrost/cover/nope/set", "50")
+        self.assertEqual(self.sock.published, [])
+
+    def test_own_echo_is_not_a_remote_press(self):
+        self.at(0)
+        hub.move("screen", 100)
+        time.sleep(0.05)
+        hub.on_message(self.sock, "433/receive", "5553")  # the bridge echoes the down it sent
+        settle()
+        self.assertEqual(self.sent(), ["5553 188", "5552 188"])
+        self.assertEqual(screen()["position"], 100)
+
+    def test_remote_presses_are_followed(self):
+        self.at(0)
+        hub.on_message(self.sock, "433/receive", "5553")  # down on the remote
+        time.sleep(0.2)
+        self.assertEqual(screen()["moving"], "down")
+        hub.on_message(self.sock, "433/receive", "5552")  # stop on the remote
+        self.assertEqual(self.sent(), [])  # the hub sent nothing itself
+        self.assertAlmostEqual(screen()["position"], 50, delta=10)
+        hub.on_message(self.sock, "433/receive", "5551")  # up: the motor goes to the top alone
+        settle()
+        self.assertEqual((screen()["position"], screen()["moving"], self.sent()), (0, None, []))
+
+    def test_remote_stop_cancels_the_hub_move(self):
+        self.at(0)
+        hub.move("screen", 100)
+        time.sleep(0.2)
+        hub.on_message(self.sock, "433/receive", "5552")
+        time.sleep(0.4)
+        self.assertEqual(self.sent(), ["5553 188"])  # no stop of its own after the remote's
+        self.assertLess(screen()["position"], 70)
+
+    def test_retained_position_is_restored(self):
+        hub.on_message(self.sock, "bifrost/cover/screen/position", "100", retained=True)
+        self.assertEqual(screen()["position"], 100)
+        hub.on_message(self.sock, "bifrost/cover/screen/position", "40")  # live: our own publish
+        self.assertEqual(screen()["position"], 100)
+
+    def test_stopped_mid_move_means_unknown(self):
+        hub.on_message(self.sock, "bifrost/cover/screen/state", "INCREASING", retained=True)
+        hub.on_message(self.sock, "bifrost/cover/screen/position", "30", retained=True)
+        self.assertIsNone(screen()["position"])
+
+    def test_pulse_is_not_part_of_the_last_code(self):
+        hub.on_message(self.sock, "433/send", "5553 188")
+        hub.on_message(self.sock, "433/receive", "5553")
+        self.assertEqual(hub.snapshot()["last_code"]["code"], "5553")
+        self.assertEqual(hub.snapshot()["last_code"]["via"], "sent")
 
 
 class WebTest(unittest.TestCase):
@@ -137,6 +291,21 @@ class WebTest(unittest.TestCase):
         self.assertEqual(self.post("/api/outlets/fan", "not json")[0], 400)
         hub.conn = None
         self.assertEqual(self.post("/api/outlets/fan", '{"on": true}')[0], 503)
+        self.assertEqual(self.sock.published, [])
+
+    def test_post_moves_the_cover(self):
+        with hub.lock:
+            hub.state["covers"]["screen"]["pos"] = 0.0
+        self.assertEqual(self.post("/api/covers/screen", '{"position": 100}'), (202, {"id": "screen", "position": 100}))
+        self.assertEqual(self.post("/api/covers/screen", '{"stop": true}'), (202, {"id": "screen", "stop": True}))
+        settle()
+        self.assertEqual([p for t, p, _ in self.sock.published if t == "433/send"], ["5553 188", "5552 188"])
+
+    def test_post_cover_errors(self):
+        self.assertEqual(self.post("/api/covers/nope", '{"position": 1}'), (404, {"error": "unknown cover"}))
+        for body in ('{"position": 101}', '{"position": "50"}', '{"position": true}', '{"stop": false}', "[]"):
+            with self.subTest(body=body):
+                self.assertEqual(self.post("/api/covers/screen", body)[0], 400)
         self.assertEqual(self.sock.published, [])
 
     def test_post_has_no_cors(self):
