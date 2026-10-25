@@ -1,0 +1,12 @@
+# Test outlets: made-up codes
+[[outlet]]
+id = "grow-lamp"
+name = "Grow lamp"
+on = "1111"
+off = "2222"
+
+[[outlet]]
+id = "fan"
+name = "Fan"
+on = "3333"
+off = "4444"

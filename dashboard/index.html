@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bifrost</title>
+  <link rel="icon" type="image/svg+xml" href="/bifrost.svg">
+  <!-- The look of the media server hub (Reactor or Cyberpunk), from its theme kit on port 80 of
+       this host. When the hub does not answer, the page keeps its own night look below. -->
+  <script>document.write(`<link rel="stylesheet" href="//${location.hostname}/theme/theme.css"><script src="//${location.hostname}/theme/theme.js"><\/script>`)</script>
+  <style>
+    :root {
+      --bg: var(--t-bg, #0b1020); --card: var(--t-surface, #121a33); --text: var(--t-text, #e6ecff); --muted: var(--t-muted, #8e9bc4);
+      --line: var(--t-line, #24304f); --accent: var(--t-accent, #6fe3ff); --gold: var(--t-highlight, #ffc857);
+      --up: var(--t-up, #7dffb3); --down: var(--t-down, #ff6b6b);
+      --rainbow: #ff6b6b, #ffc857, #7dffb3, #6fe3ff, #9b8cff;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); font: 16px/1.5 var(--t-font-body, system-ui, sans-serif); overflow-x: hidden; }
+    main { position: relative; max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; display: grid; gap: 16px; }
+
+    /* the aurora: the rainbow bridge, drifting slowly behind everything */
+    .aurora { position: fixed; inset: -20vh -20vw auto; height: 70vh; pointer-events: none; z-index: 0; opacity: 0.22; filter: blur(70px);
+      background: conic-gradient(from 180deg at 50% 100%, var(--rainbow), #ff6b6b); border-radius: 0 0 50% 50%; animation: drift 24s ease-in-out infinite alternate; }
+    [data-theme] .aurora { opacity: 0.1; }
+    @keyframes drift { from { transform: translateX(-6vw) rotate(-4deg); } to { transform: translateX(6vw) rotate(4deg); } }
+    main > * { position: relative; z-index: 1; }
+
+    /* header: the logo's waves leave the transmitter one after the other */
+    h1 { margin: 0 0 4px; font-size: 1.5rem; display: flex; align-items: center; gap: 12px; }
+    h1 svg { width: 48px; height: 48px; overflow: visible; }
+    h1 .wave { animation: beam 2.6s ease-in-out infinite; }
+    h1 .w2 { animation-delay: 0.15s; } h1 .w3 { animation-delay: 0.3s; } h1 .w4 { animation-delay: 0.45s; } h1 .w5 { animation-delay: 0.6s; }
+    @keyframes beam { 0%, 100% { opacity: 0.35; } 30% { opacity: 1; } }
+    .sub { color: var(--muted); font-size: 0.85rem; }
+    [data-theme] h1 { font-family: var(--t-font-display); letter-spacing: 0.08em; text-transform: uppercase; }
+
+    .label { color: var(--muted); font-size: 0.75rem; letter-spacing: 0.12em; text-transform: uppercase; margin: 8px 2px -6px; }
+    .panel { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; }
+
+    /* ---------- outlets ---------- */
+    #outlets { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+    .outlet { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 16px; position: relative; overflow: hidden;
+      transition: border-color 0.4s, box-shadow 0.4s; }
+    .outlet h2 { margin: 0; font-size: 1.1rem; }
+    .outlet .when { margin: 2px 0 0; color: var(--muted); font-size: 0.85rem; min-height: 1.3em; }
+    .outlet.on { border-color: color-mix(in srgb, var(--gold) 55%, var(--line)); box-shadow: 0 0 28px -8px var(--gold); }
+    [data-theme] .outlet h2 { font-family: var(--t-font-display); letter-spacing: 0.06em; text-transform: uppercase; color: var(--t-accent); }
+
+    /* a rainbow streak crosses the card when a switch is confirmed */
+    .outlet::after { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0;
+      background: linear-gradient(100deg, transparent 30%, #ff6b6b55, #ffc85755, #7dffb355, #6fe3ff55, #9b8cff55, transparent 70%);
+      transform: translateX(-100%); }
+    .outlet.burst::after { animation: streak 0.9s ease-out; }
+    @keyframes streak { 0% { opacity: 1; transform: translateX(-100%); } 100% { opacity: 0; transform: translateX(100%); } }
+    .outlet.failed { animation: shake 0.45s; }
+    @keyframes shake { 20%, 60% { transform: translateX(-6px); } 40%, 80% { transform: translateX(6px); } }
+
+    /* the bulb, and the radio waves it sends while a code is on its way */
+    .bulb { position: relative; width: 56px; height: 56px; display: grid; place-items: center; }
+    .bulb svg { width: 44px; height: 44px; overflow: visible; transition: transform 0.3s; }
+    .bulb .glass { fill: none; stroke: var(--muted); stroke-width: 3; transition: fill 0.4s, stroke 0.4s; }
+    .bulb .base { fill: var(--muted); }
+    .bulb .rays { stroke: var(--gold); stroke-width: 3; stroke-linecap: round; opacity: 0; transform-origin: 24px 20px; transition: opacity 0.4s; }
+    .on .bulb .glass { fill: var(--gold); stroke: var(--gold); }
+    .on .bulb svg { filter: drop-shadow(0 0 10px var(--gold)); }
+    .on .bulb .rays { opacity: 1; animation: spin 14s linear infinite; }
+    .burst .bulb svg { animation: pop 0.5s ease-out; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes pop { 40% { transform: scale(1.25); } }
+    .ring { position: absolute; inset: 4px; border-radius: 50%; border: 2px solid; opacity: 0; pointer-events: none; }
+    .ring:nth-child(1) { border-color: #6fe3ff; } .ring:nth-child(2) { border-color: #7dffb3; animation-delay: 0.3s !important; } .ring:nth-child(3) { border-color: #9b8cff; animation-delay: 0.6s !important; }
+    .pending .ring { animation: ripple 1.2s ease-out infinite; }
+    @keyframes ripple { from { opacity: 0.9; transform: scale(0.7); } to { opacity: 0; transform: scale(2); } }
+
+    /* the switch: a rainbow when on, shimmering while it waits for the outlet */
+    .switch { position: relative; width: 66px; height: 36px; padding: 0; border-radius: 99px; cursor: pointer;
+      border: 1px solid var(--line); background: color-mix(in srgb, var(--line) 70%, transparent); transition: background 0.35s, box-shadow 0.35s; }
+    .switch .knob { position: absolute; top: 3px; left: 3px; width: 28px; height: 28px; border-radius: 50%; background: var(--text);
+      box-shadow: 0 2px 6px #0008; transition: left 0.35s cubic-bezier(0.5, 1.6, 0.4, 0.8), transform 0.2s; }
+    .switch[aria-checked="true"] { background: linear-gradient(90deg, var(--rainbow)); background-size: 200% 100%; box-shadow: 0 0 16px -2px #6fe3ff99; }
+    .switch[aria-checked="true"] .knob { left: 33px; }
+    .switch[aria-checked="mixed"] .knob { left: 18px; opacity: 0.6; }
+    .switch:active .knob { transform: scaleX(1.15); }
+    .switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    .pending .switch { background: linear-gradient(90deg, var(--line), #6fe3ff66, var(--line)); background-size: 200% 100%; animation: shimmer 1s linear infinite; }
+    .pending .switch[aria-checked="true"] { background: linear-gradient(90deg, var(--rainbow), #ff6b6b); background-size: 200% 100%; }
+    @keyframes shimmer { to { background-position: -200% 0; } }
+
+    /* ---------- the chain: Homebridge, broker, RF bridge, the air ---------- */
+    .chain { display: flex; align-items: center; gap: 0; position: relative; }
+    .node { flex: none; display: grid; justify-items: center; gap: 6px; width: 84px; text-align: center; font-size: 0.78rem; color: var(--muted); }
+    .node .dot { position: relative; width: 14px; height: 14px; border-radius: 50%; background: var(--down); }
+    .node.up .dot { background: var(--up); }
+    .node.up .dot::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--up); animation: ping 2.4s ease-out infinite; }
+    @keyframes ping { from { opacity: 0.7; transform: scale(1); } to { opacity: 0; transform: scale(2.6); } }
+    .node.up { color: var(--text); }
+    .link { flex: 1; height: 3px; margin-bottom: 26px; border-radius: 3px; background: var(--line); position: relative; overflow: hidden; }
+    .link.up { background: repeating-linear-gradient(90deg, var(--accent) 0 8px, transparent 8px 16px); background-size: 32px 3px; animation: flow 1.6s linear infinite; opacity: 0.55; }
+    @keyframes flow { to { background-position: 32px 0; } }
+    .packet { position: absolute; top: 4px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: #fff; pointer-events: none;
+      box-shadow: 0 0 8px #fff, 0 0 18px #6fe3ff, 0 0 30px #9b8cff; }
+    .air { display: flex; gap: 3px; height: 14px; align-items: center; }
+    .air i { width: 6px; height: 14px; border: 2px solid var(--muted); border-left: 0; border-radius: 0 14px 14px 0; opacity: 0.4; }
+    .node.up .air i { border-color: var(--up); animation: beam 1.8s ease-in-out infinite; }
+    .node.up .air i:nth-child(2) { animation-delay: 0.2s; } .node.up .air i:nth-child(3) { animation-delay: 0.4s; }
+    .last { margin: 12px 0 0; color: var(--muted); font-size: 0.85rem; text-align: center; }
+    .last b { color: var(--text); font-family: var(--t-font-mono, ui-monospace, monospace); font-weight: 500; transition: color 0.3s; }
+    .last.fresh b { color: var(--accent); }
+
+    .toast { position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, calc(100% + 32px)); opacity: 0; z-index: 9; padding: 10px 16px; border-radius: 10px;
+      background: var(--card); border: 1px solid var(--down); color: var(--text); font-size: 0.9rem; transition: transform 0.35s cubic-bezier(0.5, 1.6, 0.4, 0.8), opacity 0.35s; }
+    .toast.show { transform: translate(-50%, 0); opacity: 1; }
+    .empty { color: var(--muted); text-align: center; }
+
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+  </style>
+</head>
+<body class="t-app">
+  <div class="aurora"></div>
+  <main>
+    <header>
+      <h1 class="t-title">
+        <svg viewBox="0 0 160 160" aria-hidden="true">
+          <g fill="none" stroke-width="8" stroke-linecap="round">
+            <path class="wave w1" d="M60 110 A20 20 0 0 1 100 110" stroke="#9b8cff"/>
+            <path class="wave w2" d="M48 110 A32 32 0 0 1 112 110" stroke="#6fe3ff"/>
+            <path class="wave w3" d="M36 110 A44 44 0 0 1 124 110" stroke="#7dffb3"/>
+            <path class="wave w4" d="M24 110 A56 56 0 0 1 136 110" stroke="#ffc857"/>
+            <path class="wave w5" d="M12 110 A68 68 0 0 1 148 110" stroke="#ff6b6b"/>
+          </g>
+          <circle cx="80" cy="110" r="7" fill="#fff"/>
+        </svg>
+        Bifrost
+      </h1>
+      <div class="sub" id="updated">loading…</div>
+    </header>
+
+    <div class="label t-label">Outlets</div>
+    <section id="outlets"></section>
+
+    <div class="label t-label">Signal path</div>
+    <section class="panel t-panel">
+      <div class="chain" id="chain">
+        <div class="node" data-n="homebridge"><span class="dot"></span>HomeKit</div>
+        <div class="link" data-l="0"></div>
+        <div class="node" data-n="broker"><span class="dot"></span>Broker</div>
+        <div class="link" data-l="1"></div>
+        <div class="node" data-n="bridge"><span class="dot"></span>RF bridge</div>
+        <div class="link" data-l="2"></div>
+        <div class="node" data-n="air"><span class="air"><i></i><i></i><i></i></span>433 MHz</div>
+      </div>
+      <p class="last" id="last">no RF code yet</p>
+    </section>
+  </main>
+  <div class="toast" id="toast" role="status"></div>
+
+  <script>
+    const $ = (sel, root = document) => root.querySelector(sel);
+    const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+    const ago = (iso) => {
+      if (!iso) return "";
+      const s = Math.max(0, Math.round((Date.now() - new Date(iso)) / 1000));
+      return s < 45 ? "just now" : s < 3600 ? Math.round(s / 60) + " min ago" : s < 86400 ? Math.round(s / 3600) + " h ago" : Math.round(s / 86400) + " d ago";
+    };
+    const BULB = `<svg viewBox="0 0 48 48" aria-hidden="true">
+      <g class="rays"><line x1="24" y1="-4" x2="24" y2="-9"/><line x1="44" y1="20" x2="49" y2="20"/><line x1="4" y1="20" x2="-1" y2="20"/>
+        <line x1="38" y1="5" x2="42" y2="1"/><line x1="10" y1="5" x2="6" y2="1"/><line x1="38" y1="35" x2="42" y2="39"/><line x1="10" y1="35" x2="6" y2="39"/></g>
+      <path class="glass" d="M24 4 C14 4 8 11 8 19 C8 26 13 29 16 33 L32 33 C35 29 40 26 40 19 C40 11 34 4 24 4 Z"/>
+      <rect class="base" x="17" y="36" width="14" height="4" rx="2"/><rect class="base" x="19" y="42" width="10" height="4" rx="2"/></svg>`;
+
+    let status = null, lastCodeKey = null;
+    const pending = new Map();  // outlet id -> { want, since, timer }
+
+    function toast(text) {
+      const t = $("#toast");
+      t.textContent = text;
+      t.classList.add("show");
+      clearTimeout(toast.timer);
+      toast.timer = setTimeout(() => t.classList.remove("show"), 4000);
+    }
+
+    function card(o) {
+      let c = document.querySelector(`.outlet[data-id="${CSS.escape(o.id)}"]`);
+      if (!c) {
+        c = el("article", "outlet panel t-panel");
+        c.dataset.id = o.id;
+        const bulb = el("div", "bulb");
+        bulb.append(el("span", "ring"), el("span", "ring"), el("span", "ring"));
+        bulb.insertAdjacentHTML("beforeend", BULB);
+        const info = el("div");
+        info.append(el("h2"), el("p", "when"));
+        const sw = el("button", "switch");
+        sw.setAttribute("role", "switch");
+        sw.append(el("span", "knob"));
+        sw.addEventListener("click", () => toggle(o.id));
+        c.append(bulb, info, sw);
+        $("#outlets").append(c);
+      }
+      return c;
+    }
+
+    function paintOutlet(o) {
+      const c = card(o), p = pending.get(o.id);
+      const on = p ? p.want : o.on;
+      c.classList.toggle("on", on === true);
+      c.classList.toggle("pending", !!p);
+      $("h2", c).textContent = o.name;
+      $(".when", c).textContent = p ? (p.want ? "switching on…" : "switching off…")
+        : o.on === null ? "state unknown, press to switch" : `${o.on ? "On" : "Off"}${o.at ? " · " + ago(o.at) : ""}`;
+      const sw = $(".switch", c);
+      sw.setAttribute("aria-checked", on === null ? "mixed" : String(on));
+      sw.setAttribute("aria-label", `${o.name}: ${on ? "on" : "off"}`);
+    }
+
+    function flash(c, cls) {
+      c.classList.remove(cls);
+      void c.offsetWidth;  // restart the animation
+      c.classList.add(cls);
+      setTimeout(() => c.classList.remove(cls), 900);
+    }
+
+    // A packet of light runs along the chain: towards the air for a code sent, back for one heard
+    function sendPacket(outward) {
+      const chain = $("#chain"), nodes = [...chain.querySelectorAll(".node")];
+      const x = (n) => n.offsetLeft + n.offsetWidth / 2;
+      const [from, to] = outward ? [x(nodes[1]), x(nodes[3])] : [x(nodes[3]), x(nodes[1])];
+      const dot = el("span", "packet");
+      chain.append(dot);
+      dot.animate([{ left: from + "px", opacity: 0 }, { opacity: 1, offset: 0.15 }, { opacity: 1, offset: 0.85 }, { left: to + "px", opacity: 0 }],
+                  { duration: 1100, easing: "ease-in-out" }).finished.then(() => dot.remove());
+    }
+
+    function paint(s) {
+      status = s;
+      $("#updated").textContent = "433 MHz ⇄ MQTT ⇄ HomeKit · updated " + new Date(s.updated_at).toLocaleTimeString();
+      const ups = { homebridge: s.homebridge, broker: s.broker, bridge: s.bridge.online, air: s.bridge.online };
+      for (const [n, up] of Object.entries(ups)) $(`[data-n="${n}"]`).classList.toggle("up", up);
+      const links = [s.homebridge && s.broker, s.broker && s.bridge.online, s.bridge.online];
+      links.forEach((up, i) => $(`[data-l="${i}"]`).classList.toggle("up", up));
+
+      if (!s.outlets.length) $("#outlets").replaceChildren(el("p", "empty", "No outlet yet: add one to outlets.toml."));
+      for (const o of s.outlets) {
+        const p = pending.get(o.id);
+        if (p && o.on === p.want && o.at && new Date(o.at) >= p.since - 1000) {
+          clearTimeout(p.timer);
+          pending.delete(o.id);
+          flash(card(o), "burst");
+        }
+        paintOutlet(o);
+      }
+
+      const last = $("#last"), lc = s.last_code;
+      const key = lc ? lc.code + lc.at : null;
+      if (lc) last.replaceChildren("last code ", el("b", "", lc.code), ` ${lc.via === "sent" ? "sent" : "heard from a remote"} · ${ago(lc.at)}`);
+      if (key && lastCodeKey !== null && key !== lastCodeKey) {
+        sendPacket(lc.via === "sent");
+        flash(last, "fresh");
+      }
+      lastCodeKey = key;
+    }
+
+    async function load() {
+      try {
+        const r = await fetch("/api/status.json", { cache: "no-store" });
+        if (!r.ok) throw new Error(r.status);
+        paint(await r.json());
+      } catch {
+        $("#updated").textContent = "the hub does not answer, retrying…";
+      }
+    }
+
+    async function toggle(id) {
+      if (pending.has(id) || !status) return;
+      const o = status.outlets.find((x) => x.id === id);
+      const want = o.on !== true;
+      const p = { want, since: Date.now() };
+      pending.set(id, p);
+      paintOutlet(o);
+      sendPacket(true);
+      try {
+        const r = await fetch(`/api/outlets/${encodeURIComponent(id)}`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on: want }),
+        });
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status);
+      } catch (e) {
+        return fail(o, `${o.name}: ${e.message}`);
+      }
+      // The outlet does not answer: the state comes back from the RF bridge, which echoes every
+      // code it sends. Poll quickly until it does, give up after 6 s.
+      p.timer = setTimeout(() => fail(o, `${o.name}: no answer from the RF bridge`), 6000);
+      for (let i = 0; i < 10 && pending.get(id) === p; i++) {
+        await new Promise((r) => setTimeout(r, 600));
+        await load();
+      }
+    }
+
+    function fail(o, message) {
+      const p = pending.get(o.id);
+      if (p) clearTimeout(p.timer);
+      pending.delete(o.id);
+      paintOutlet(status.outlets.find((x) => x.id === o.id) || o);
+      flash(card(o), "failed");
+      toast(message);
+    }
+
+    load();
+    setInterval(load, 5000);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
+  </script>
+</body>
+</html>

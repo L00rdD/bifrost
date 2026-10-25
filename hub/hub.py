@@ -1,9 +1,11 @@
-"""Bifrost hub: turns outlet names into RF codes and back, and serves the status of the
-whole thing for the d-mediaserver home page.
+"""Bifrost hub: turns outlet names into RF codes and back, serves the dashboard, and the
+status of the whole thing for the d-mediaserver home page.
 
   bifrost/outlet/<id>/set    ON / OFF  -> publishes the outlet's code on 433/send
   433/receive  <code>                  -> bifrost/outlet/<id>/state ON / OFF (retained)
+  :8582/                               -> the dashboard (dashboard/)
   :8582/api/status.json                -> broker, Homebridge, RF bridge, outlets (CORS open)
+  POST :8582/api/outlets/<id>          -> {"on": true} switches the outlet, as /set does
 
 The codes live in outlets.toml only. 433/receive carries both the remote's presses and
 every code the bridge sends, so the state follows whoever switched the outlet.
@@ -21,13 +23,14 @@ import threading
 import time
 import tomllib
 from datetime import datetime
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 BROKER = os.environ.get("MQTT_HOST", "mosquitto")
 USER, PASS = os.environ.get("MQTT_USER", ""), os.environ.get("MQTT_PASS", "")
 HOMEBRIDGE = (os.environ.get("HOMEBRIDGE_HOST", "host.docker.internal"), 8581)
 PORT = int(os.environ.get("STATUS_PORT", "8582"))
+DASHBOARD_DIR = Path(os.environ.get("DASHBOARD_DIR", Path(__file__).resolve().parent.parent / "dashboard"))
 BRIDGE_TIMEOUT = 60  # the bridge says "online" every 10 s
 OUTLETS = tomllib.loads(Path(os.environ.get("OUTLETS_FILE", "/app/outlets.toml")).read_text())["outlet"]
 BY_ID = {o["id"]: o for o in OUTLETS}
@@ -36,6 +39,8 @@ log = logging.getLogger("hub")
 
 state = {"broker": False, "bridge_seen": None, "last_code": None, "outlets": {}}
 lock = threading.Lock()
+conn: socket.socket | None = None  # the broker connection, shared with the web server
+send_lock = threading.Lock()       # one packet at a time on it, from either thread
 
 
 def now() -> str:
@@ -75,8 +80,18 @@ def _read(sock: socket.socket) -> tuple[int, bytes]:
             return kind, exact(n)
 
 
+def _send(sock: socket.socket, data: bytes) -> None:
+    with send_lock:
+        sock.sendall(data)
+
+
 def publish(sock: socket.socket, topic: str, payload: str, retain: bool = False) -> None:
-    sock.sendall(_packet(0x31 if retain else 0x30, _str(topic) + payload.encode()))
+    _send(sock, _packet(0x31 if retain else 0x30, _str(topic) + payload.encode()))
+
+
+def switch(sock: socket.socket, outlet: dict, on: bool) -> None:
+    publish(sock, "433/send", str(outlet["on" if on else "off"]))
+    log.info("%s -> %s", outlet["id"], "ON" if on else "OFF")
 
 
 def on_message(sock: socket.socket, topic: str, payload: str) -> None:
@@ -85,8 +100,7 @@ def on_message(sock: socket.socket, topic: str, payload: str) -> None:
         outlet, cmd, value = BY_ID.get(parts[2]), parts[3], payload.strip().upper()
         if cmd == "set":
             if outlet and value in ("ON", "OFF"):
-                publish(sock, "433/send", str(outlet["on" if value == "ON" else "off"]))
-                log.info("%s -> %s", outlet["id"], value)
+                switch(sock, outlet, value == "ON")
             else:
                 log.warning("ignored %s = %r (unknown outlet or not ON/OFF)", topic, payload)
         elif cmd == "state" and outlet and value in ("ON", "OFF"):
@@ -112,6 +126,7 @@ def on_message(sock: socket.socket, topic: str, payload: str) -> None:
 
 
 def listen() -> None:
+    global conn
     while True:
         try:
             with socket.create_connection((BROKER, 1883), timeout=45) as sock:
@@ -126,12 +141,13 @@ def listen() -> None:
                 sock.sendall(_packet(0x82, struct.pack("!H", 1) + b"".join(_str(t) + b"\x00" for t in topics)))
                 with lock:
                     state["broker"] = True
+                conn = sock
                 log.info("listening on %s", BROKER)
                 while True:
                     try:
                         kind, data = _read(sock)
                     except socket.timeout:
-                        sock.sendall(b"\xc0\x00")  # ping, the broker drops us after 1.5 x keepalive
+                        _send(sock, b"\xc0\x00")  # ping, the broker drops us after 1.5 x keepalive
                         continue
                     if kind >> 4 == 3:
                         tlen = struct.unpack("!H", data[:2])[0]
@@ -139,6 +155,7 @@ def listen() -> None:
                         on_message(sock, data[2:2 + tlen].decode(), data[2 + tlen + skip:].decode(errors="replace"))
         except Exception as e:  # noqa: BLE001 - keep retrying, the broker may restart
             log.warning("broker: %s", e)
+        conn = None
         with lock:
             state["broker"] = False
         time.sleep(10)
@@ -167,18 +184,56 @@ def snapshot() -> dict:
         }
 
 
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path.split("?", 1)[0] not in ("/api/status.json", "/health"):
-            return self.send_error(404)
-        body = json.dumps(snapshot()).encode()
-        self.send_response(200)
+class Handler(SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=str(DASHBOARD_DIR), **kwargs)
+
+    def _json(self, code: int, data: dict, cors: bool = False) -> None:
+        body = json.dumps(data).encode()
+        self.send_response(code)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Cache-Control", "no-cache")
+        if cors:
+            self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path.split("?", 1)[0] in ("/api/status.json", "/health"):
+            return self._json(200, snapshot(), cors=True)
+        return super().do_GET()
+
+    def do_POST(self):
+        # No CORS here, and JSON only: a browser asks first (preflight) before posting JSON to
+        # another origin, gets no answer, and gives up. So a web page elsewhere cannot switch.
+        parts = self.path.split("?", 1)[0].strip("/").split("/")
+        outlet = BY_ID.get(parts[2]) if len(parts) == 3 and parts[:2] == ["api", "outlets"] else None
+        if not outlet:
+            return self._json(404, {"error": "unknown outlet"})
+        if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
+            return self._json(415, {"error": "send JSON"})
+        try:
+            on = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))["on"]
+            if not isinstance(on, bool):
+                raise ValueError
+        except (ValueError, KeyError, TypeError):
+            return self._json(400, {"error": 'expected {"on": true} or {"on": false}'})
+        sock = conn
+        if sock is None:
+            return self._json(503, {"error": "the broker is not connected"})
+        try:
+            switch(sock, outlet, on)
+        except OSError as e:
+            return self._json(503, {"error": f"broker: {e}"})
+        self._json(202, {"id": outlet["id"], "on": on})
+
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-cache")
+        super().end_headers()
+
+    def list_directory(self, path):
+        self.send_error(404)
+        return None
 
     def log_message(self, fmt, *args):
         pass

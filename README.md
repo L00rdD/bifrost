@@ -1,3 +1,5 @@
+<p align="center"><img src="dashboard/bifrost.svg" alt="Bifrost" width="140"></p>
+
 # Bifrost
 
 The bridge between the worlds of the house: 433 MHz radio, MQTT and HomeKit.
@@ -27,7 +29,7 @@ restarts, and a client can confirm a switch by waiting for a fresh state.
 | :--- | :--- | :--- |
 | `mosquitto` | Pi, port `1883` | MQTT broker, login required (`MQTT_USER` / `MQTT_PASS`) |
 | `homebridge` | Pi, host network, UI on `http://dpi.local:8581` | HomeKit bridge "Bifrost", plugin `homebridge-mqttthing`, one accessory per outlet of `outlets.toml` |
-| `hub` (`bifrost-hub`) | Pi, port `8582` | outlet names ⇄ RF codes (`outlets.toml`), and `/api/status.json` for the d-mediaserver home page card: broker, Homebridge, RF bridge, outlets, last code |
+| `hub` (`bifrost-hub`) | Pi, port `8582` | outlet names ⇄ RF codes (`outlets.toml`), the dashboard on `http://dpi.local:8582`, and `/api/status.json` for the d-mediaserver home page card: broker, Homebridge, RF bridge, outlets, last code |
 | `firmware/rf-bridge` | NodeMCU + 433 MHz TX (`D2`) and RX (`D1`) | Sends what arrives on `433/send`, publishes what it hears on `433/receive` |
 
 All optional for d-mediaserver: its home page shows the Bifrost card only when
@@ -57,6 +59,24 @@ make flash               # build and flash the RF bridge, board plugged in over 
 (not committed, copy `secrets.h.example`). `MQTT_HOST` is the
 Pi's address, `192.168.1.229`: give the Pi a fixed lease in the box so it does
 not move.
+
+## Dashboard
+
+`http://dpi.local:8582` shows each outlet with a switch, and the signal path from
+HomeKit to the air. A switch sends `POST /api/outlets/<id>` with `{"on": true}`, then
+waits for the RF bridge to echo the code: the bulb lights up when it does, and the
+switch flips back if nothing comes within 6 s. The page takes the look of the
+d-mediaserver hub (its theme kit on port 80) when the hub answers.
+
+The POST only takes JSON and has no CORS header, so a page from another site cannot
+switch the outlets through a visitor's browser. It has no login: anyone on the home
+network can switch them, as with the remote.
+
+## Tests
+
+```sh
+python3 -m unittest discover -s tests -t .
+```
 
 ## Adding an RF outlet
 
