@@ -60,11 +60,6 @@ for projector in devices.get("projector", []):
                             "DPAD_LEFT", "DPAD_RIGHT", "DPAD_CENTER", "BACK", "HOME", "MEDIA_PLAY_PAUSE", "UNUSED_12",
                             "UNUSED_13", "UNUSED_14", "MENU"],
     })
-if env.get("ALEXA_USER") and env.get("ALEXA_PASS"):
-    # homebridge-alexa: every accessory above, through the homebridge.ca cloud and the Homebridge skill.
-    # It reads them over HAP with the pin, so Homebridge runs in insecure mode (make deploy sets it).
-    config["platforms"].append({"platform": "Alexa", "name": "Alexa", "username": env["ALEXA_USER"],
-                                "password": env["ALEXA_PASS"], "pin": env["HB_PIN"]})
 (root / "homebridge/config.json").write_text(json.dumps(config, indent=2) + "\n")
 print(f"homebridge/config.json: {len(devices.get('outlet', []))} outlet(s), {len(devices.get('cover', []))} cover(s), "
-      f"{len(devices.get('projector', []))} projector(s){', Alexa' if env.get('ALEXA_USER') and env.get('ALEXA_PASS') else ''}")
+      f"{len(devices.get('projector', []))} projector(s)")

@@ -148,24 +148,6 @@ The Home app gets a TV: on / off, the apps as inputs, and the iPhone's remote
 up on this projector, so it wakes from the Home app; a longer power cut and the hub
 shows it unreachable until it is back.
 
-## Alexa
-
-Optional, and the way to share the house without an Apple home hub (HomeKit asks for
-one to invite someone, and for remote access): `homebridge-alexa` gives Alexa every
-accessory of Homebridge, through the homebridge.ca cloud.
-
-1. Create an account on https://www.homebridge.ca/, put it in `.env` (`ALEXA_USER`,
-   `ALEXA_PASS`), then `make env deploy`: Homebridge gets the plugin and runs in
-   insecure mode (`-I`), which the plugin needs to read the accessories.
-2. In the Alexa app, enable the **Homebridge** skill, link it to the homebridge.ca
-   account, then "Alexa, discover devices".
-
-"Alexa, turn on the projector" (apps: "change input to Netflix on the projector"),
-"Alexa, turn on the screen" opens it (down), "turn off" closes it, "set the screen to
-50". Insecure mode lets anything on the home network that knows `HB_PIN` drive the
-accessories, as the dashboard already does. Emptying `ALEXA_USER` and deploying
-turns both off.
-
 ## Origin
 
 The firmware comes from `~/personal/domotics/rf_module/rf_sender`. Changes:
