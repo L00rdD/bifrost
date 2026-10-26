@@ -320,6 +320,9 @@ class ProjectorTest(unittest.TestCase):
         self.assertEqual(hub.probe({}), (True, "com.netflix.ninja"))
         self.adb.out = "  mWakefulness=Asleep\n"
         self.assertEqual(hub.probe({}), (False, None))
+        self.adb.out = ("  mWakefulness=Dreaming\n      topResumedActivity=ActivityRecord{8523068 u0 "
+                        "com.google.android.apps.tv.dreamx/android.service.dreams.DreamActivity t4262}\n")
+        self.assertEqual(hub.probe({}), (True, hub.SCREENSAVER))
         self.adb.out = "error: device offline"
         with self.assertRaises(OSError):
             hub.probe({})

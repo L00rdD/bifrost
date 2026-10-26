@@ -290,8 +290,11 @@ def adb(projector: dict, *args: str) -> str:
     return r.stdout
 
 
+SCREENSAVER = "screensaver"  # the app in front while the projector dreams
+
+
 def probe(projector: dict) -> tuple[bool, str | None]:
-    """Awake or asleep, and the app in front."""
+    """Awake or asleep, and the app in front. Dreaming (the screensaver) is on: it still projects."""
     # asleep, no activity is resumed: the last grep finds nothing and fails, so the shell
     # exits 0 whatever it finds (and grep -m1 closing the pipe early is not an error either)
     out = adb(projector, "shell", "dumpsys power 2>/dev/null | grep -m1 mWakefulness=; "
@@ -299,6 +302,8 @@ def probe(projector: dict) -> tuple[bool, str | None]:
     awake = re.search(r"mWakefulness=(\w+)", out)
     if not awake:
         raise OSError("adb: no power state from the projector")
+    if awake.group(1) == "Dreaming":
+        return True, SCREENSAVER
     app = re.search(r"topResumedActivity=\S*\{\S+ u\d+ ([\w.]+)/", out)
     return awake.group(1) == "Awake", app.group(1) if app else None
 
