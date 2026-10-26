@@ -1,0 +1,64 @@
+{
+  "title": "Den Den Mushi — boîtier du pont RF",
+  "subtitle": "Bifrost · Wemos D1 mini, émetteur et récepteur 433 MHz, infrarouge · résine, Anycubic Photon Mono M7",
+  "scad": "denden.scad",
+  "out": "rendu.html",
+  "stl_dir": "stl",
+  "hero": "assembly",
+  "intro": "<div class=\"summary\"><p>Le pont RF dans un escargot-téléphone de One Piece. Les <b>yeux sont les LED infrarouges</b> (le dôme fait la pupille) : l'escargot regarde ce qu'il pilote. Une troisième LED et le récepteur IR sortent par le menton. Le combiné est posé sur deux fourches au sommet de la coquille, le cadran rotatif est sur le flanc droit.</p><p>Tout se monte sur le <b>berceau</b> (le fond) : chaque composant dans son alvéole, les fils soudés de l'un à l'autre, puis le berceau se clipse sous le corps avec 4 aimants.</p></div>",
+  "views": [
+    {"id": "assembly", "title": "Vue d'ensemble", "part": "assembly", "camera": "0,0,45,62,0,215,420", "caption": "Monté, côté droit : le cadran rotatif au centre de la spirale."},
+    {"id": "front", "title": "Face", "part": "assembly", "camera": "0,0,45,80,0,90,380", "caption": "De face : les pupilles (LED IR) regardent droit devant, le récepteur IR et la troisième LED dans le menton."},
+    {"id": "left", "title": "Flanc gauche", "part": "assembly", "camera": "0,0,45,75,0,330,360", "caption": "Flanc gauche : la spirale complète gravée dans la coquille."},
+    {"id": "tail", "title": "Queue", "part": "assembly", "camera": "auto:75,0,295", "caption": "Arrière : le tunnel de la prise micro-USB, jusqu'au D1 mini."},
+    {"id": "under", "title": "Dessous du corps", "part": "body", "camera": "auto:150,0,215", "caption": "Le corps vu de dessous : les 4 plots à aimant, le rebord de l'antenne le long de la paroi, l'ouverture de la coquille."},
+    {"id": "exploded", "title": "Éclaté", "part": "exploded", "camera": "0,0,70,62,0,215,620", "caption": "Éclaté : berceau et composants, corps, coquille, combiné, yeux."},
+    {"id": "body_section", "title": "Coupe du corps", "part": "body_section", "camera": "auto:80,0,180", "caption": "Coupe du corps dans l'axe : tête creuse, canaux des fils dans les pédoncules, pied ouvert dessous."},
+    {"id": "shell_section", "title": "Coupe de la coquille", "part": "shell_section", "camera": "auto:80,0,180", "caption": "Coupe de la coquille : creuse, flancs épaissis sous la spirale, fourches du combiné percées."},
+    {"id": "eye_section", "title": "Coupe d'un œil", "part": "eye_section", "camera": "auto:55,0,150", "caption": "Coupe d'un œil : alésage de 5 mm devant, épaulement pour la collerette de la LED, douille du pédoncule dessous."},
+    {"id": "cradle_top", "title": "Berceau équipé", "part": "cradle_fit", "camera": "auto:20,0,0", "caption": "Le berceau vu de dessus : D1 mini à la queue (USB vers l'arrière), émetteur à gauche devant, récepteur à droite, bac du driver IR au milieu, récepteur IR et LED au menton."},
+    {"id": "step1", "title": "Étape 1", "part": "step1", "camera": "0,0,45,62,0,215,520", "step_only": true, "caption": "Les LED entrent par l'arrière des yeux, les fils descendent dans les pédoncules."},
+    {"id": "step2", "title": "Étape 2", "part": "step2", "camera": "0,0,55,62,0,215,560", "step_only": true, "caption": "La coquille se plante dans le pont, le combiné sur ses fourches."},
+    {"id": "step3", "title": "Étape 3", "part": "step3", "camera": "auto:45,0,200", "step_only": true, "caption": "Chaque composant dans son alvéole."},
+    {"id": "step4", "title": "Étape 4", "part": "step4", "camera": "0,0,40,55,0,200,460", "step_only": true, "caption": "En coupe : l'antenne de l'émetteur (orange) fait le tour de la coquille, celle du récepteur (bleu) longe la paroi du pied."},
+    {"id": "step5", "title": "Étape 5", "part": "step5", "camera": "0,0,45,62,0,215,520", "step_only": true, "caption": "Le berceau remonte sous le corps, 4 aimants de chaque côté."}
+  ],
+  "parts": [
+    {"part": "body", "name": "Corps", "role": "Pied, pont, cou, tête et pédoncules d'une pièce, ouvert dessous. Tunnel USB à la queue, fenêtres IR au menton, rebord d'antenne sous le pont, 4 plots à aimant.", "views": ["auto:62,0,215", "auto:150,0,215"]},
+    {"part": "shell", "name": "Coquille", "role": "Creuse, une spirale sur chaque flanc et le cadran à droite. Son bouchon se plante dans l'ouverture du pont (collé). L'antenne de l'émetteur s'enroule dedans.", "views": ["auto:62,0,215", "auto:62,0,330"]},
+    {"part": "handset", "name": "Combiné", "role": "Collé sur les deux fourches de la coquille, ses tétons dans leurs trous.", "views": ["auto:62,0,215", "auto:150,0,30"]},
+    {"part": "eye_right", "name": "Œil droit", "role": "Reçoit une LED IR de 5 mm par l'arrière. Différent du gauche : la LED regarde droit devant malgré l'inclinaison du pédoncule.", "views": ["auto:80,0,90", "auto:80,0,250"]},
+    {"part": "eye_left", "name": "Œil gauche", "role": "Le symétrique de l'œil droit.", "views": ["auto:80,0,90", "auto:80,0,250"]},
+    {"part": "cradle", "name": "Berceau", "role": "Le fond : une alvéole par composant, 4 logements d'aimant, 4 empreintes de patins.", "views": ["auto:30,0,200", "auto:160,0,200"]}
+  ],
+  "measure": [
+    ["<code>d1</code>, <code>d1_top</code>, <code>d1_bot</code>", "D1 mini : L × l × épaisseur du circuit, le composant le plus haut dessus, les soudures dessous", "34,2 × 25,6 × 1,0 ; 3,6 ; 1,6 mm"],
+    ["<code>usb</code>, <code>plug</code>", "Prise micro-USB du D1 mini (l × h) et surmoulage de la fiche du câble (le tunnel doit la laisser entrer)", "7,6 × 2,8 ; 12 × 8 mm"],
+    ["<code>tx</code>", "Émetteur 433 MHz (FS1000A), avec son quartz", "19,5 × 19,5 × 8 mm"],
+    ["<code>rx</code>", "Récepteur 433 MHz (XY-MK-5V)", "30,5 × 14,5 × 7 mm"],
+    ["<code>tsop</code>", "Récepteur IR (TSOP38238 / VS1838B) : l × p × h avec son dôme", "6,0 × 5,6 × 8,0 mm"],
+    ["<code>ir_led</code>, <code>ir_rim</code>", "LED IR : diamètre et collerette", "5,0 ; 5,9 mm"],
+    ["<code>magnet</code>", "Aimants disque (ceux de la tour), avec le jeu", "6,4 × 2,3 mm"]
+  ],
+  "steps": [
+    {"title": "Les yeux", "view": "step1", "html": "<p>Souder deux fils fins (30 AWG) sur les pattes de chaque LED IR, en notant l'anode. Passer les fils par le pédoncule : ils descendent dans la tête puis le cou jusqu'au pied.</p><p>Pousser la LED dans l'œil <b>par l'arrière</b> : le dôme sort devant et fait la pupille, la collerette bute sur l'épaulement. Coller l'œil sur le téton du pédoncule, la pupille vers l'avant (l'œil droit et l'œil gauche ne sont pas interchangeables).</p>", "check": ["Fils soudés et repérés (anode / cathode) sur les deux LED", "Fils passés jusqu'au pied", "Yeux collés, pupilles vers l'avant"]},
+    {"title": "Coquille et combiné", "view": "step2", "html": "<p>Coller la coquille dans l'ouverture du pont : son bouchon s'y emboîte, le cadran du côté droit. Coller le combiné sur les deux fourches, ses tétons dans leurs trous.</p><p class=\"note\">Si l'antenne de l'émetteur doit passer dans la coquille (étape 4), on peut aussi ne coller la coquille qu'après l'avoir glissée par le dessous.</p>", "check": ["Coquille collée, cadran à droite", "Combiné collé"]},
+    {"title": "Le berceau", "view": "step3", "html": "<p>Poser chaque composant dans son alvéole : le D1 mini à plat, l'ESP vers le haut et l'USB vers la queue, sur ses deux rails ; l'émetteur devant à gauche ; le récepteur sur la droite ; le transistor et les deux résistances dans le bac du milieu ; le récepteur IR et la troisième LED au menton, face à leurs fenêtres.</p><p>Souder les fils d'un composant à l'autre (voir <a href=\"#cablage\">Câblage</a>), puis les fils des yeux. Les encoches des alvéoles laissent passer les fils.</p>", "check": ["D1 mini en place, USB vers la queue", "Émetteur, récepteur, driver, récepteur IR, LED du menton en place", "Câblage soudé et vérifié", "Fils des yeux soudés au driver"]},
+    {"title": "Les antennes", "view": "step4", "html": "<p>Les antennes font environ <b>17 cm</b> (quart d'onde à 433 MHz) : les garder longues et sans boucle serrée.</p><ul><li><b>Émetteur</b> : vers le haut par l'ouverture du pont, puis le long du bord intérieur de la coquille.</li><li><b>Récepteur</b> : vers la paroi droite, puis sur le rebord intérieur du pied, sous le pont, jusqu'à la queue.</li></ul><p>Les garder loin l'une de l'autre et loin de l'antenne du D1 mini. La résine laisse passer la radio.</p>", "check": ["Antenne de l'émetteur dans la coquille", "Antenne du récepteur sur le rebord", "Essai d'émission et de réception avant de fermer (make sniff, make send)"]},
+    {"title": "Fermeture", "view": "step5", "html": "<p>Coller 4 aimants dans les plots du corps et 4 dans le berceau, <b>pôles vérifiés</b> (ils doivent s'attirer). Remonter le berceau sous le corps : l'USB face à son tunnel, la LED et le récepteur IR face au menton. Coller 4 patins de 8 mm dans les empreintes.</p>", "check": ["8 aimants collés, pôles vérifiés", "Berceau fermé, USB accessible", "Patins collés", "Pont en ligne (433/status)"]}
+  ],
+  "sections": [
+    {"id": "cablage", "title": "Câblage", "html": "<table><tr><th>D1 mini</th><th>Vers</th></tr><tr><td><code>D2</code> (GPIO4)</td><td>DATA de l'émetteur</td></tr><tr><td><code>D1</code> (GPIO5)</td><td>DATA du récepteur</td></tr><tr><td><code>D5</code> (GPIO14)</td><td>base du transistor du driver IR, par 1 kΩ (plus tard)</td></tr><tr><td><code>D6</code> (GPIO12)</td><td>OUT du récepteur IR (plus tard)</td></tr><tr><td><code>5V</code></td><td>VCC de l'émetteur, du récepteur, anode de la chaîne de LED IR, VCC du récepteur IR (3,3 V pour un VS1838B)</td></tr><tr><td><code>G</code></td><td>toutes les masses, émetteur du transistor</td></tr></table><p><b>Driver IR</b> : les trois LED IR en série (deux yeux et le menton) avec 10 Ω, du 5 V vers le collecteur d'un 2N2222, émetteur à la masse. Environ 80 mA par impulsions : largement assez pour des contrôleurs de bandeaux LED à travers une pièce. Le firmware ne pilote pas encore l'IR.</p><p>Flasher un D1 mini : <code>make flash FQBN=esp8266:esp8266:d1_mini</code>.</p>"},
+    {"id": "impression", "title": "Impression", "html": "<p>Comme la tour de d-mediaserver : résine ABS-like, supports « Heavy » de Photon Workshop, pièces inclinées de 10 à 15° sur deux axes.</p><ul><li><b>Corps</b> et <b>coquille</b> : ouverture vers le haut (pont et dessus de la coquille vers le plateau). Les deux sont ouverts dessous : ils se vident tout seuls.</li><li><b>Yeux</b> : alésage de la LED horizontal, supports sous la douille.</li><li><b>Combiné</b> : coupelles vers le bas.</li><li><b>Berceau</b> : à plat, alvéoles vers le haut, légèrement incliné.</li></ul><div class=\"warn\">Les cotes des composants sont nominales : mesurer et ajuster (<a href=\"#mesures\">Avant d'imprimer</a>) avant de lancer le corps et le berceau.</div>"}
+  ],
+  "hardware": [
+    "Wemos D1 mini",
+    "Émetteur 433 MHz FS1000A et récepteur XY-MK-5V (ceux du pont actuel)",
+    "3 LED IR 5 mm, 940 nm (TSAL6200 ou équivalent)",
+    "Récepteur IR TSOP38238 ou VS1838B",
+    "Transistor 2N2222 (ou NPN équivalent), résistances 1 kΩ et 10 Ω",
+    "8 aimants disque 6 × 2 mm",
+    "4 patins caoutchouc de 8 mm",
+    "Fil fin (30 AWG) et colle pour résine"
+  ]
+}
