@@ -48,6 +48,7 @@ All optional for d-mediaserver: its home page shows the Bifrost card only when
 | `433/receive` | from the bridge | a decimal code heard on the air (one per press), and every code it sends: whoever switches an outlet, Homebridge sees the new state |
 | `433/receive/raw` | from the bridge | the same code with its bits, protocol and pulse length |
 | `433/status` | from the bridge | `boot`, then `online` every 10 s |
+| `433/info` | from the bridge, retained | the build running, its IP and Wi-Fi signal: `Oct 26 2026 23:58:01 192.168.1.225 -61 dBm` |
 
 ## Setup
 
@@ -56,10 +57,11 @@ cp .env.example .env     # fill it in (MQTT login = the one in firmware/rf-bridg
 cp outlets.toml.example outlets.toml   # the outlets and their RF codes (make sniff)
 make env                 # copy .env to the Pi (~/bifrost)
 make deploy              # render the Homebridge config, copy outlets.toml, start everything
-make flash               # build and flash the RF bridge, board plugged in over USB
+make flash               # build and flash the RF bridge, board plugged in over USB (the first time)
+make ota                 # then: build and send it over Wi-Fi to rf-bridge.local, no USB
 ```
 
-`firmware/rf-bridge/secrets.h` holds the Wi-Fi and MQTT login of the bridge
+`firmware/rf-bridge/secrets.h` holds the Wi-Fi and MQTT login of the bridge, and `OTA_PASS`, the password of updates over Wi-Fi
 (not committed, copy `secrets.h.example`). `MQTT_HOST` is the
 Pi's address, `192.168.1.229`: give the Pi a fixed lease in the box so it does
 not move.
@@ -154,3 +156,12 @@ repeated presses of the same button are reported again after 1 s (they were
 dropped until another code came), the serial log no longer prints the Wi-Fi
 password and lists the networks in range at boot, `433/receive/raw` gives the
 protocol of each code, and every code sent is echoed on `433/receive`.
+
+## The bridge heals itself
+
+The board keeps the Wi-Fi awake (modem sleep made the broker drop it for
+silence), retries the broker every 5 s without blocking, and restarts by
+itself after 2 minutes without Wi-Fi or without the broker. On 2026-10-26 it
+stayed off the network after the Pi rebooted until it was unplugged; it now
+comes back on its own. Updates go over Wi-Fi (`make ota`, ArduinoOTA,
+password `OTA_PASS`); only a board flashed before OTA needs the USB cable.

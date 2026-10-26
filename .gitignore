@@ -6,3 +6,4 @@ firmware/rf-bridge/build/
 .DS_Store
 __pycache__/
 /outlets.toml
+build/

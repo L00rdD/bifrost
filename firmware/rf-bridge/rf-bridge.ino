@@ -1,4 +1,5 @@
 #include <ESP8266WiFi.h>
+#include <ArduinoOTA.h>
 #include <PubSubClient.h>
 #include <RCSwitch.h>
 #include <LittleFS.h>
@@ -22,6 +23,14 @@
 #ifndef MQTT_PASS
   #error "MQTT_PASS not defined. Define it with -DMQTT_PASS=\"password\"."
 #endif
+#ifndef OTA_PASS
+  #error "OTA_PASS not defined: add it to secrets.h (updates over Wi-Fi, make ota)."
+#endif
+
+// Shown on 433/info after every boot: tells which build runs after an update
+#define FIRMWARE_VERSION __DATE__ " " __TIME__
+// The name on the network: rf-bridge.local, the target of make ota
+#define HOSTNAME "rf-bridge"
 
 // Global configuration variables assigned from compile-time macros
 const char* ssid     = WIFI_SSID;
@@ -47,12 +56,24 @@ const unsigned long repeatWindow = 1000; // a remote repeats its code for ~1 s: 
 unsigned long lastHeartbeat = 0;
 const unsigned long heartbeatInterval = 10000; // 10 seconds
 
+// Self-healing: Wi-Fi or the broker missing for this long and the board restarts
+// (on 2026-10-26 it stayed off the network after the Pi rebooted, until unplugged)
+const unsigned long restartAfter = 120000;      // 2 minutes
+const unsigned long mqttRetryInterval = 5000;   // between two attempts at the broker
+unsigned long lastHealthyAt = 0;                // last time Wi-Fi and the broker were both up
+unsigned long lastMqttAttempt = 0;
+
 // Connect to Wi-Fi network using credentials provided at compile time
 void setup_wifi() {
   Serial.print("Connecting to WiFi SSID: ");
   Serial.println(ssid);
   // What the ESP hears (2.4 GHz only): helps tell a wrong password from a network out of reach
   WiFi.mode(WIFI_STA);
+  WiFi.hostname(HOSTNAME);
+  // modem sleep made the broker drop the bridge for silence ("exceeded timeout")
+  WiFi.setSleepMode(WIFI_NONE_SLEEP);
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(false);
   int n = WiFi.scanNetworks();
   Serial.printf("%d networks in range:\n", n);
   for (int i = 0; i < n; i++) {
@@ -60,8 +81,13 @@ void setup_wifi() {
   }
   WiFi.begin(ssid, pass);
   unsigned long since = millis();
+  unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
+    if (millis() - start > restartAfter) {
+      Serial.println(" no Wi-Fi for 2 min: restarting");
+      ESP.restart();
+    }
     if (millis() - since > 10000) {
       wl_status_t st = WiFi.status();
       Serial.println(st == WL_WRONG_PASSWORD ? " wrong password" : st == WL_NO_SSID_AVAIL ? " network not found" :
@@ -105,27 +131,41 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
 }
 
-// Reconnect to the MQTT broker if disconnected, using username/password authentication
+// One attempt at the broker; the loop calls it again every few seconds, so OTA,
+// the radio and the Wi-Fi keep running while the broker is away
 void reconnect() {
-  while (!client.connected()) {
-    Serial.print("Connecting to MQTT broker at ");
-    Serial.print(mqttHost);
-    Serial.print(":");
-    Serial.print(mqttPort);
-    Serial.print(" with user ");
-    Serial.print(mqttUser);
-    Serial.print(" ... ");
-    if (client.connect("rf433-client", mqttUser, mqttPass)) {
-      Serial.println("Connected");
-      client.subscribe("433/send");
-      client.publish("433/status", "boot");
-    } else {
-      Serial.print("Failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" - retrying in 1 second");
-      delay(1000);
-    }
+  if (WiFi.status() != WL_CONNECTED || millis() - lastMqttAttempt < mqttRetryInterval) {
+    return;
   }
+  lastMqttAttempt = millis();
+  Serial.printf("Connecting to MQTT broker at %s:%u with user %s ... ", mqttHost, mqttPort, mqttUser);
+  if (client.connect("rf433-client", mqttUser, mqttPass)) {
+    Serial.println("Connected");
+    client.subscribe("433/send");
+    client.publish("433/status", "boot");
+    // retained: whoever subscribes later still learns which build runs, and where
+    char info[96];
+    snprintf(info, sizeof(info), "%s %s %d dBm", FIRMWARE_VERSION, WiFi.localIP().toString().c_str(), WiFi.RSSI());
+    client.publish("433/info", info, true);
+  } else {
+    Serial.printf("Failed, rc=%d - retrying in %lu s\n", client.state(), mqttRetryInterval / 1000);
+  }
+}
+
+// Updates over Wi-Fi: make ota sends the new firmware to rf-bridge.local
+void setup_ota() {
+  ArduinoOTA.setHostname(HOSTNAME);
+  ArduinoOTA.setPassword(OTA_PASS);
+  ArduinoOTA.onStart([]() {
+    rfReceiver.disableReceive(); // no radio interrupts while the flash is written
+    Serial.println("OTA: update starting");
+  });
+  ArduinoOTA.onEnd([]() { Serial.println("OTA: done, restarting"); });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("OTA: error %u\n", error);
+    rfReceiver.enableReceive(RX_PIN);
+  });
+  ArduinoOTA.begin();
 }
 
 void setup() {
@@ -165,18 +205,31 @@ void setup() {
   // Setup MQTT client and callback
   client.setServer(mqttHost, mqttPort);
   client.setCallback(mqttCallback);
+  client.setSocketTimeout(5); // a broker that does not answer must not hold the loop for 15 s
+
+  setup_ota();
+  lastHealthyAt = millis();
 }
 
 void loop() {
+  ArduinoOTA.handle();
   if (!client.connected()) {
     reconnect();
   }
   client.loop();
 
+  if (WiFi.status() == WL_CONNECTED && client.connected()) {
+    lastHealthyAt = millis();
+  } else if (millis() - lastHealthyAt > restartAfter) {
+    Serial.println("No Wi-Fi or no broker for 2 min: restarting");
+    ESP.restart();
+  }
+
   // Send periodic heartbeat message
   if (millis() - lastHeartbeat > heartbeatInterval) {
-    Serial.println("Sending heartbeat: online");
-    client.publish("433/status", "online");
+    if (client.connected()) {
+      client.publish("433/status", "online");
+    }
     lastHeartbeat = millis();
   }
 
