@@ -48,7 +48,7 @@ def reset():
             c.update(pos=None, dir=0, since=0.0, target=None, run=None, sent={})
 
 
-hub.TOP_MARGIN, hub.REVERSE_PAUSE = 0.1, 0.05  # the test screen runs in 0.4 s down, 0.5 s up
+hub.REVERSE_PAUSE = 0.05  # the test screen runs in 0.4 s down, 0.5 s up
 
 
 def settle(timeout=3):
@@ -185,12 +185,12 @@ class CoverTest(unittest.TestCase):
         self.assertEqual(self.sent(), ["5551 188", "5552 188"])
         self.assertEqual(screen()["position"], 50)
 
-    def test_close_runs_past_the_time_into_the_top(self):
+    def test_close_stops_at_close_time(self):
         self.at(100)
         start = time.time()
         hub.on_message(self.sock, "bifrost/cover/screen/set", "CLOSE")
         settle()
-        self.assertAlmostEqual(time.time() - start, 0.5 + hub.TOP_MARGIN, delta=0.08)
+        self.assertAlmostEqual(time.time() - start, 0.5, delta=0.08)
         self.assertEqual(screen()["position"], 0)
 
     def test_unknown_position_goes_up_first(self):

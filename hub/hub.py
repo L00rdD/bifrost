@@ -66,7 +66,6 @@ CLOSE_AFTER = 300   # s off before the screen goes up: a change of mind does not
 # adb shell goes through a shell on the projector: only these ever reach it from a payload
 KEY_RE = re.compile(r"[A-Z][A-Z0-9_]{0,39}")
 PACKAGE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+")
-TOP_MARGIN = 2.0      # s past the computed time when closing: the motor stops itself at the top
 REVERSE_PAUSE = 0.5   # s between stop and the other direction
 ECHO_WINDOW = 3       # s: the bridge repeats what it sends on 433/receive
 log = logging.getLogger("hub")
@@ -199,7 +198,7 @@ def _run(cid: str, target: int | None, run: threading.Event, press: bool) -> Non
         if press and pos is None:  # unknown: all the way up first, then it is 0
             _press(cid, "up")
             _cover_set(cid, -1, target=target)
-            if run.wait(cfg["close_time"] + TOP_MARGIN):
+            if run.wait(cfg["close_time"]):
                 return
             _press(cid, "stop")
             _cover_set(cid, 0, pos=0.0)
@@ -218,8 +217,6 @@ def _run(cid: str, target: int | None, run: threading.Event, press: bool) -> Non
             _press(cid, "down" if d > 0 else "up")
         _cover_set(cid, d, target=target)
         duration = abs(target - pos) / 100 * (cfg["open_time"] if d > 0 else cfg["close_time"])
-        if target == 0:
-            duration += TOP_MARGIN  # the drift of the estimate goes away against the top
         if run.wait(duration):
             return
         if press:

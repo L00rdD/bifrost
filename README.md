@@ -104,9 +104,8 @@ are lost at the next deploy (the accessories come from `outlets.toml`). Plugins 
 
 A cover has up, stop and down buttons and does not report its position: the hub
 times it. Opening sends down, then stop once the time measured for that distance
-is over; closing sends up and lets the motor run into the top a little longer
-(`TOP_MARGIN`, 2 s), where it stops by itself and the estimate starts again from
-0. A new order mid-move goes through stop first. The remote's presses are
+is over; closing sends up, then stop after `close_time`, no longer: the motor must
+not run into its end stop. A new order mid-move goes through stop first. The remote's presses are
 followed the same way (down then stop: the hub knows where it stopped).
 
 1. With a Flipper Zero, *Sub-GHz > Read* each button: `Key` is the code in hex
