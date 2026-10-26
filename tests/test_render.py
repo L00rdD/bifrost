@@ -51,6 +51,8 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(tv["inputs"][0], {"name": "Netflix", "value": "com.netflix.ninja"})
         self.assertEqual(tv["topics"]["setRemoteKey"], "bifrost/projector/projector/key")
         self.assertEqual(len(tv["remoteKeyValues"]), 16)
+        # the volume buttons send 0 and 1 of the same list
+        self.assertEqual(tv["remoteKeyValues"][:2], ["VOLUME_UP", "VOLUME_DOWN"])
         self.assertNotIn("10.0.0.9", json.dumps(config))  # the projector's address stays with the hub
 
     def test_missing_env_values(self):

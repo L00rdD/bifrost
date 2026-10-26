@@ -145,7 +145,8 @@ stays: a change of mind does not roll it up and down.
    shows `device` once it is done (`unauthorized` before). The key stays in `data/adb`.
 
 The Home app gets a TV: on / off, the apps as inputs, and the iPhone's remote
-(control centre) for the arrows, select, back, play/pause. Standby keeps the network
+(control centre) for the arrows, select, back, play/pause, and its volume buttons
+for the sound. The dashboard's remote adds mute and settings. Standby keeps the network
 up on this projector, so it wakes from the Home app; a longer power cut and the hub
 shows it unreachable until it is back.
 

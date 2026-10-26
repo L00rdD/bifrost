@@ -55,8 +55,10 @@ for projector in devices.get("projector", []):
         "onValue": "ON",
         "offValue": "OFF",
         # HomeKit's keys in its order (rewind, fast forward, next, previous, up, down, left, right,
-        # select, back, exit, play/pause, 3 unused, info) as Android key names: the hub sends KEYCODE_<name>
-        "remoteKeyValues": ["MEDIA_REWIND", "MEDIA_FAST_FORWARD", "MEDIA_NEXT", "MEDIA_PREVIOUS", "DPAD_UP", "DPAD_DOWN",
+        # select, back, exit, play/pause, 3 unused, info) as Android key names: the hub sends KEYCODE_<name>.
+        # The iPhone's volume buttons go through the same list, 0 louder and 1 quieter: the remote never
+        # sends rewind or fast forward, so those two are the volume
+        "remoteKeyValues": ["VOLUME_UP", "VOLUME_DOWN", "MEDIA_NEXT", "MEDIA_PREVIOUS", "DPAD_UP", "DPAD_DOWN",
                             "DPAD_LEFT", "DPAD_RIGHT", "DPAD_CENTER", "BACK", "HOME", "MEDIA_PLAY_PAUSE", "UNUSED_12",
                             "UNUSED_13", "UNUSED_14", "MENU"],
     })
