@@ -117,6 +117,11 @@
     .controls button:hover { border-color: var(--accent); }
     .controls button:focus-visible, .cover input:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
     .controls button.stop { color: var(--down); }
+    /* by hand, as on the remote: the hub only follows; reset when the drawing and the screen disagree */
+    .controls.manual { margin-top: 8px; font-size: 0.8rem; color: var(--muted); }
+    .controls.manual button { height: 30px; min-width: 36px; padding: 0 10px; font-size: 0.8rem; color: var(--muted); background: transparent; }
+    .controls.manual button:hover { color: var(--text); }
+    .controls.manual button.reset { margin-left: auto; }
     .cover input[type="range"] { width: 100%; margin: 14px 0 0; accent-color: var(--accent); }
     @media (max-width: 520px) { .cover { grid-template-columns: 1fr; } .screen { max-width: 180px; } }
 
@@ -386,12 +391,22 @@
           b.addEventListener("click", () => moveCover(c.id, body));
           controls.append(b);
         }
+        const manual = el("div", "controls manual");
+        manual.append(el("span", "", "Manual"));
+        for (const [label, body, cls, title] of [["▲", { press: "up" }, "", "up, as on the remote: runs to the top by itself"],
+                                                  ["▼", { press: "down" }, "", "down, as on the remote: runs until stop"],
+                                                  ["↺ Reset", { reset: true }, "reset", "the screen is not where it is drawn: forget it, all the way up, then 0 %"]]) {
+          const b = el("button", cls, label);
+          b.title = title;
+          b.addEventListener("click", () => moveCover(c.id, body));
+          manual.append(b);
+        }
         const range = el("input");
         Object.assign(range, { type: "range", min: 0, max: 100, step: 5 });
         range.setAttribute("aria-label", `${c.name}: position`);
         range.addEventListener("pointerdown", () => (range.dragging = true));
         range.addEventListener("change", () => { range.dragging = false; moveCover(c.id, { position: Number(range.value) }); });
-        info.append(el("h2"), el("p", "when"), controls, range);
+        info.append(el("h2"), el("p", "when"), controls, range, manual);
         k.append(screen, info);
         $("#covers").append(k);
       }
@@ -407,7 +422,8 @@
       screen.style.setProperty("--t", c.target ?? 0);
       $("h2", k).textContent = c.name;
       const where = (p) => (p === 0 ? "rolled up" : p === 100 ? "open" : `${p} %`);
-      $(".when", k).textContent = c.position === null ? (c.moving ? `moving ${c.moving}, position unknown` : "position unknown")
+      $(".when", k).textContent = c.position === null ? (c.moving === "up" ? "all the way up, to start again from the top"
+          : c.moving ? "moving down, position unknown" : "position unknown")
         : c.moving ? `${c.moving === "down" ? "opening" : "closing"}… ${c.position} % → ${c.target ?? (c.moving === "down" ? 100 : 0)} %`
         : where(c.position);
       if (!range.dragging && document.activeElement !== range) range.value = c.target ?? c.position ?? 0;

@@ -8,8 +8,11 @@ status of the whole thing for the d-mediaserver home page.
   POST :8582/api/outlets/<id>          -> {"on": true} switches the outlet, as /set does
 
   bifrost/cover/<id>/set     0-100 / OPEN / CLOSE / STOP -> moves the cover (0 = up, 100 = open)
+                             RESET -> forgets the position: all the way up, then 0 again
+  bifrost/cover/<id>/press   up / down / stop -> the button as on the remote, followed the same way
   bifrost/cover/<id>/position, /target, /state           <- retained, for HomeKit and the next start
-  POST :8582/api/covers/<id>           -> {"position": 100} or {"stop": true}, as /set does
+  POST :8582/api/covers/<id>           -> {"position": 100}, {"stop": true}, {"press": "up"} or
+                                          {"reset": true}, as /set and /press do
 
   bifrost/projector/<id>/set  ON / OFF, /key  DPAD_UP..., /app/set  <package> -> over ADB
   bifrost/projector/<id>/state  ON / OFF, /app  <package>  <- retained, polled every 5 s
@@ -21,7 +24,8 @@ every code the bridge sends, so the state follows whoever switched the outlet.
 A cover (the projection screen) does not say where it is either: the hub sends up or down,
 then stop when the time measured for that distance is over, and follows the remote's
 presses the same way. Closing goes all the way to the top, where the motor stops by itself
-and the estimate starts again from a known place.
+and the estimate starts again from a known place. When the estimate is wrong (a code the
+screen never got), /press moves it by hand as the remote would, and RESET starts again.
 
 The projector (Google TV) ignores power keys from the Google TV remote protocol, so the hub
 drives it with adb (network debugging on, this hub allowed once on the projector's screen).
@@ -195,16 +199,18 @@ def _run(cid: str, target: int | None, run: threading.Event, press: bool) -> Non
         if target is None:
             _press(cid, "stop")
             return _cover_set(cid, 0)
-        if press and pos is None:  # unknown: all the way up first, then it is 0
-            _press(cid, "up")
+        if pos is None:  # unknown: all the way up first, then it is 0. Not pressing (following
+            if not press and target:  # the remote): only its up gets there, a down stays unknown
+                return
+            if press:
+                _press(cid, "up")
             _cover_set(cid, -1, target=target)
             if run.wait(cfg["close_time"]):
                 return
-            _press(cid, "stop")
+            if press:
+                _press(cid, "stop")
             _cover_set(cid, 0, pos=0.0)
             pos, moving = 0.0, 0
-        if pos is None:
-            return
         d = 1 if target > pos else -1 if target < pos else 0
         if press and moving and moving != d:
             _press(cid, "stop")
@@ -245,6 +251,25 @@ def move(cid: str, target: int | None, press: bool = True) -> None:
 def heard(cid: str, key: str) -> None:
     """A code of the cover on 433/receive that the hub did not send: someone used the remote."""
     log.info("%s <- %s (remote)", cid, key)
+    follow(cid, key)
+
+
+def press(cid: str, key: str) -> None:
+    """Sends the button as the remote would, no timing, and follows it like the remote's press."""
+    _press(cid, key)
+    follow(cid, key)
+
+
+def reset(cid: str) -> None:
+    """Forgets the position, wrong or not, and starts again: all the way up, then 0."""
+    log.info("%s -> reset", cid)
+    with lock:
+        state["covers"][cid].update(pos=None, dir=0, lost=False)
+    move(cid, 0)
+
+
+def follow(cid: str, key: str) -> None:
+    """Keeps the estimate going behind a button pressed outside the hub's own moves."""
     with lock:
         c = state["covers"][cid]
         if c["run"]:
@@ -262,10 +287,16 @@ def on_cover(topic: str, payload: str, retained: bool) -> None:
     if cid not in COVER_BY_ID:
         return log.warning("ignored %s (unknown cover)", topic)
     value = payload.strip().upper()
+    if cmd == "press":
+        if value not in ("UP", "DOWN", "STOP"):
+            return log.warning("ignored %s = %r (not up, down or stop)", topic, payload)
+        return press(cid, value.lower())
     if cmd == "set":
+        if value == "RESET":
+            return reset(cid)
         target = {"OPEN": 100, "CLOSE": 0, "STOP": None}.get(value, value)
         if target is not None and not (isinstance(target, int) or target.isdigit() and int(target) <= 100):
-            return log.warning("ignored %s = %r (not 0-100, OPEN, CLOSE or STOP)", topic, payload)
+            return log.warning("ignored %s = %r (not 0-100, OPEN, CLOSE, STOP or RESET)", topic, payload)
         return move(cid, None if target is None else int(target))
     if not retained:  # our own publishes coming back
         return
@@ -489,7 +520,7 @@ def listen() -> None:
                 kind, ack = _read(sock)
                 if kind >> 4 != 2 or ack[1] != 0:
                     raise ConnectionError(f"connection refused (code {ack[1]})")
-                topics = ("433/#", "bifrost/outlet/+/set", "bifrost/outlet/+/state", "bifrost/cover/+/set",
+                topics = ("433/#", "bifrost/outlet/+/set", "bifrost/outlet/+/state", "bifrost/cover/+/set", "bifrost/cover/+/press",
                           "bifrost/cover/+/position", "bifrost/cover/+/state", "bifrost/projector/+/set",
                           "bifrost/projector/+/key", "bifrost/projector/+/app/set")
                 _send(sock, _packet(0x82, struct.pack("!H", 1) + b"".join(_str(t) + b"\x00" for t in topics)))
@@ -594,7 +625,11 @@ class Handler(SimpleHTTPRequestHandler):
                 on = body["on"]
                 if not isinstance(on, bool):
                     raise ValueError
-            elif body.get("stop") is True:
+            elif len(body) != 1:
+                raise ValueError
+            elif body.get("stop") is True or body.get("reset") is True:
+                position = None
+            elif body.get("press") in ("up", "down", "stop"):
                 position = None
             else:
                 position = body["position"]
@@ -602,7 +637,7 @@ class Handler(SimpleHTTPRequestHandler):
                     raise ValueError
         except (ValueError, KeyError, TypeError, AttributeError):
             return self._json(400, {"error": 'expected {"on": true} or {"on": false}' if outlet
-                                    else 'expected {"position": 0-100} or {"stop": true}' if cover
+                                    else 'expected {"position": 0-100}, {"stop": true}, {"press": "up"} or {"reset": true}' if cover
                                     else 'expected {"on": true}, {"key": "HOME"} or {"app": "<package>"}'})
         if projector:  # adb, not the broker
             projector_command(projector["id"], **body)
@@ -611,9 +646,13 @@ class Handler(SimpleHTTPRequestHandler):
         if sock is None:
             return self._json(503, {"error": "the broker is not connected"})
         if cover:
-            move(cover["id"], position)
-            return self._json(202, {"id": cover["id"], "position": position} if position is not None
-                              else {"id": cover["id"], "stop": True})
+            if "press" in body:
+                press(cover["id"], body["press"])
+            elif "reset" in body:
+                reset(cover["id"])
+            else:
+                move(cover["id"], position)
+            return self._json(202, {"id": cover["id"], **body})
         try:
             switch(sock, outlet, on)
         except OSError as e:

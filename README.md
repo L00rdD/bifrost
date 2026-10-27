@@ -21,7 +21,8 @@ and talks to the hub:
 | :--- | :--- | :--- |
 | `bifrost/outlet/<id>/set` | `ON` / `OFF` | the hub sends the outlet's code on `433/send` |
 | `bifrost/outlet/<id>/state` | `ON` / `OFF`, retained | from every code seen on `433/receive`: the remote, the Home app, the tracker, `make send` |
-| `bifrost/cover/<id>/set` | `0`-`100`, `OPEN`, `CLOSE`, `STOP` | moves a cover (the projection screen): 0 = rolled up, 100 = open |
+| `bifrost/cover/<id>/set` | `0`-`100`, `OPEN`, `CLOSE`, `STOP`, `RESET` | moves a cover (the projection screen): 0 = rolled up, 100 = open; `RESET` forgets the position, goes all the way up and starts again from 0 |
+| `bifrost/cover/<id>/press` | `up`, `down`, `stop` | sends the button as the remote would, no timing: the hub follows it like a press on the remote |
 | `bifrost/projector/<id>/set`, `/key`, `/app/set` | `ON` / `OFF`, an Android key (`HOME`, `DPAD_UP`…), an app package | the hub drives the projector over adb |
 | `bifrost/projector/<id>/state`, `/app` | `ON` / `OFF`, the app in front, retained | from the hub's look at the projector every 5 s |
 | `bifrost/cover/<id>/position`, `/target`, `/state` | `0`-`100`, `0`-`100`, `INCREASING` / `DECREASING` / `STOPPED`, retained | where the hub reckons the cover is, for HomeKit and the hub's next start |
@@ -125,7 +126,15 @@ broker otherwise) goes all the way up first. A down on the remote left to run
 reaches the bottom of the screen, past 100 %: the estimate stops at 100.
 
 The dashboard and the home page card get the covers in `/api/status.json`, and
-`POST /api/covers/<id>` takes `{"position": 0-100}` or `{"stop": true}`.
+`POST /api/covers/<id>` takes `{"position": 0-100}`, `{"stop": true}`, `{"press": "up"}`
+(or `down`, `stop`) and `{"reset": true}`.
+
+The estimate goes wrong when the screen misses a code: the hub sent up, the bridge
+put it on the air, the screen stayed down, and the hub now reckons 0 % while the screen
+is open, so a close does nothing. The dashboard's *Manual* row is for that: ▲ and ▼ send
+the button as the remote would (up runs to the top by itself, down until stop), and
+*Reset* forgets the position, goes all the way up for `close_time` and starts again
+from 0 %. An up by hand or on the remote with the position unknown ends at 0 % too.
 
 ## Adding a projector (Google TV)
 
