@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Bifrost</title>
   <link rel="icon" type="image/svg+xml" href="/bifrost.svg">
-  <!-- The look of the media server hub (Reactor or Cyberpunk), from its theme kit on port 80 of
+  <!-- The look of the media server hub (Reactor, Cyberpunk or Hogwarts), from its theme kit on port 80 of
        this host. When the hub does not answer, the page keeps its own night look below. -->
   <script>document.write(`<link rel="stylesheet" href="//${location.hostname}/theme/theme.css"><script src="//${location.hostname}/theme/theme.js"><\/script>`)</script>
   <style>
@@ -15,6 +15,8 @@
       --up: var(--t-up, #7dffb3); --down: var(--t-down, #ff6b6b);
       --rainbow: #ff6b6b, #ffc857, #7dffb3, #6fe3ff, #9b8cff;
     }
+    /* Hogwarts' highlight is Gryffindor scarlet: a lamp lit in red reads as a fault, so it burns candle gold */
+    :root[data-theme="hogwarts"] { --gold: var(--t-accent); }
     * { box-sizing: border-box; }
     body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); font: 16px/1.5 var(--t-font-body, system-ui, sans-serif); overflow-x: hidden; }
     main { position: relative; max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; display: grid; gap: 16px; }
