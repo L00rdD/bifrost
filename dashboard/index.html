@@ -393,8 +393,8 @@
         }
         const manual = el("div", "controls manual");
         manual.append(el("span", "", "Manual"));
-        for (const [label, body, cls, title] of [["▲", { press: "up" }, "", "up, as on the remote: runs to the top by itself"],
-                                                  ["▼", { press: "down" }, "", "down, as on the remote: runs until stop"],
+        for (const [label, body, cls, title] of [["▲", { press: "up" }, "", "up, as on the remote, whatever the drawing says: ■ stops it, the hub does after close_time at the latest"],
+                                                  ["▼", { press: "down" }, "", "down, as on the remote, whatever the drawing says: ■ stops it, the hub does after open_time at the latest"],
                                                   ["↺ Reset", { reset: true }, "reset", "the screen is not where it is drawn: forget it, all the way up, then 0 %"]]) {
           const b = el("button", cls, label);
           b.title = title;

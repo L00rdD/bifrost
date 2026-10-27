@@ -9,7 +9,8 @@ status of the whole thing for the d-mediaserver home page.
 
   bifrost/cover/<id>/set     0-100 / OPEN / CLOSE / STOP -> moves the cover (0 = up, 100 = open)
                              RESET -> forgets the position: all the way up, then 0 again
-  bifrost/cover/<id>/press   up / down / stop -> the button as on the remote, followed the same way
+  bifrost/cover/<id>/press   up / down / stop -> the button as on the remote; stop comes by itself
+                             once the measured time is over, the motor never stopping on its own
   bifrost/cover/<id>/position, /target, /state           <- retained, for HomeKit and the next start
   POST :8582/api/covers/<id>           -> {"position": 100}, {"stop": true}, {"press": "up"} or
                                           {"reset": true}, as /set and /press do
@@ -23,9 +24,10 @@ every code the bridge sends, so the state follows whoever switched the outlet.
 
 A cover (the projection screen) does not say where it is either: the hub sends up or down,
 then stop when the time measured for that distance is over, and follows the remote's
-presses the same way. Closing goes all the way to the top, where the motor stops by itself
-and the estimate starts again from a known place. When the estimate is wrong (a code the
-screen never got), /press moves it by hand as the remote would, and RESET starts again.
+presses the same way. The motor never stops on its own, not even at the top: every move
+the hub starts ends with a stop, at the latest when the measured time is over. When the
+estimate is wrong (a code the screen never got), /press moves it by hand as the remote
+would, and RESET goes all the way up for close_time and starts again from 0.
 
 The projector (Google TV) ignores power keys from the Google TV remote protocol, so the hub
 drives it with adb (network debugging on, this hub allowed once on the projector's screen).
@@ -190,7 +192,7 @@ def _press(cid: str, key: str) -> None:
     log.info("%s -> %s", cid, key)
 
 
-def _run(cid: str, target: int | None, run: threading.Event, press: bool) -> None:
+def _run(cid: str, target: int | None, press: bool, run: threading.Event) -> None:
     """Moves to target (None: stop). press=False only follows a move the remote started."""
     cfg = COVER_BY_ID[cid]
     try:
@@ -238,14 +240,51 @@ def _run(cid: str, target: int | None, run: threading.Event, press: bool) -> Non
                 state["covers"][cid]["run"] = None
 
 
-def move(cid: str, target: int | None, press: bool = True) -> None:
-    """Starts a move in the background, cancelling the one under way."""
+def _manual(cid: str, key: str, run: threading.Event) -> None:
+    """Up or down pressed by hand from the hub: as on the remote, no reckoning of the distance,
+    but stop comes by itself once the measured time is over, the motor never stopping on its own."""
+    cfg = COVER_BY_ID[cid]
+    d = 1 if key == "down" else -1
+    try:
+        with lock:
+            moving = state["covers"][cid]["dir"]
+        if moving and moving != d:
+            _press(cid, "stop")
+            _cover_set(cid, 0)
+            if run.wait(REVERSE_PAUSE):
+                return
+        _press(cid, key)
+        _cover_set(cid, d, target=100 if d > 0 else 0)
+        if run.wait(cfg["open_time"] if d > 0 else cfg["close_time"]):
+            return
+        _press(cid, "stop")
+        if d < 0:  # a whole close_time up: at the top, wherever it started
+            _cover_set(cid, 0, pos=0.0)
+        else:      # down from unknown stays unknown; from a known place, the estimate followed
+            _cover_set(cid, 0)
+    except OSError as e:
+        log.warning("%s: %s", cid, e)
+        with lock:
+            state["covers"][cid].update(pos=None, dir=0)
+    finally:
+        with lock:
+            if state["covers"][cid]["run"] is run:
+                state["covers"][cid]["run"] = None
+
+
+def _start(cid: str, fn, *args) -> None:
+    """Runs fn(cid, *args, run) in the background, cancelling the move under way."""
     with lock:
         c = state["covers"][cid]
         if c["run"]:
             c["run"].set()
         run = c["run"] = threading.Event()
-    threading.Thread(target=_run, args=(cid, target, run, press), daemon=True, name=f"cover-{cid}").start()
+    threading.Thread(target=fn, args=(cid, *args, run), daemon=True, name=f"cover-{cid}").start()
+
+
+def move(cid: str, target: int | None, press: bool = True) -> None:
+    """Starts a move to target (None: stop), cancelling the one under way."""
+    _start(cid, _run, target, press)
 
 
 def heard(cid: str, key: str) -> None:
@@ -255,9 +294,10 @@ def heard(cid: str, key: str) -> None:
 
 
 def press(cid: str, key: str) -> None:
-    """Sends the button as the remote would, no timing, and follows it like the remote's press."""
-    _press(cid, key)
-    follow(cid, key)
+    """The button by hand: stop, or up / down with a stop of the hub's own at the measured time."""
+    if key == "stop":
+        return move(cid, None)
+    _start(cid, _manual, key)
 
 
 def reset(cid: str) -> None:
@@ -269,7 +309,7 @@ def reset(cid: str) -> None:
 
 
 def follow(cid: str, key: str) -> None:
-    """Keeps the estimate going behind a button pressed outside the hub's own moves."""
+    """Keeps the estimate going behind the remote's button; its stop is for whoever holds it."""
     with lock:
         c = state["covers"][cid]
         if c["run"]:

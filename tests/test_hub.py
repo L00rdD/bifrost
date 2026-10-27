@@ -254,30 +254,44 @@ class CoverTest(unittest.TestCase):
         self.assertEqual(self.sent(), ["5553 188"])  # no stop of its own after the remote's
         self.assertLess(screen()["position"], 70)
 
-    def test_press_sends_the_button_and_follows_it_like_the_remote(self):
+    def test_press_sends_the_button_and_the_stop_is_yours(self):
         self.at(0)
         hub.on_message(self.sock, "bifrost/cover/screen/press", "down")
         time.sleep(0.2)
         self.assertEqual((self.sent(), screen()["moving"]), (["5553 188"], "down"))
         hub.on_message(self.sock, "433/receive", "5553")  # the bridge's echo: not a second press
         hub.on_message(self.sock, "bifrost/cover/screen/press", "stop")
+        settle()
         self.assertEqual(self.sent(), ["5553 188", "5552 188"])
         self.assertAlmostEqual(screen()["position"], 50, delta=10)
-        hub.on_message(self.sock, "bifrost/cover/screen/press", "up")  # the motor stops at the top alone
-        settle()
-        self.assertEqual((self.sent()[2:], screen()["position"], screen()["moving"]), (["5551 188"], 0, None))
 
-    def test_press_up_from_unknown_lands_at_the_top(self):
-        hub.on_message(self.sock, "bifrost/cover/screen/press", "down")  # unknown stays unknown
-        settle()
-        self.assertEqual((self.sent(), screen()["position"], screen()["moving"]), (["5553 188"], None, None))
+    def test_press_left_alone_stops_at_the_measured_time(self):
+        self.at(100)  # wrong: the screen is really at the top, whatever the hub reckons
         start = time.time()
         hub.on_message(self.sock, "bifrost/cover/screen/press", "up")
-        time.sleep(0.2)
-        self.assertEqual((screen()["position"], screen()["moving"]), (None, "up"))
         settle()
-        self.assertAlmostEqual(time.time() - start, 0.5, delta=0.1)
-        self.assertEqual((self.sent()[1:], screen()["position"]), (["5551 188"], 0))  # no stop of its own
+        self.assertAlmostEqual(time.time() - start, 0.5, delta=0.1)  # close_time, not 0 s
+        self.assertEqual((self.sent(), screen()["position"]), (["5551 188", "5552 188"], 0))
+        start = time.time()
+        hub.on_message(self.sock, "bifrost/cover/screen/press", "down")
+        settle()
+        self.assertAlmostEqual(time.time() - start, 0.4, delta=0.1)  # open_time
+        self.assertEqual((self.sent()[2:], screen()["position"]), (["5553 188", "5552 188"], 100))
+
+    def test_press_from_unknown(self):
+        hub.on_message(self.sock, "bifrost/cover/screen/press", "down")  # unknown stays unknown
+        time.sleep(0.2)
+        self.assertEqual((screen()["position"], screen()["moving"]), (None, "down"))
+        settle()
+        self.assertEqual((self.sent(), screen()["position"]), (["5553 188", "5552 188"], None))
+        hub.on_message(self.sock, "bifrost/cover/screen/press", "up")  # a whole close_time up: the top
+        settle()
+        self.assertEqual((self.sent()[2:], screen()["position"]), (["5551 188", "5552 188"], 0))
+
+    def test_remote_up_from_unknown_ends_at_the_top(self):
+        hub.on_message(self.sock, "433/receive", "5551")
+        settle()
+        self.assertEqual((self.sent(), screen()["position"]), ([], 0))  # the remote's stop is not the hub's
 
     def test_reset_goes_all_the_way_up_then_starts_at_zero(self):
         self.at(0)  # wrong: the screen is open, its code never arrived
@@ -537,7 +551,8 @@ class WebTest(unittest.TestCase):
         settle()
         self.assertEqual(self.post("/api/covers/screen", '{"reset": true}'), (202, {"id": "screen", "reset": True}))
         settle()
-        self.assertEqual([p for t, p, _ in self.sock.published if t == "433/send"], ["5551 188", "5551 188", "5552 188"])
+        self.assertEqual([p for t, p, _ in self.sock.published if t == "433/send"],
+                         ["5551 188", "5552 188", "5551 188", "5552 188"])
         self.assertEqual(screen()["position"], 0)
 
     def test_post_cover_errors(self):

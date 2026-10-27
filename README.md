@@ -132,9 +132,12 @@ The dashboard and the home page card get the covers in `/api/status.json`, and
 The estimate goes wrong when the screen misses a code: the hub sent up, the bridge
 put it on the air, the screen stayed down, and the hub now reckons 0 % while the screen
 is open, so a close does nothing. The dashboard's *Manual* row is for that: ▲ and ▼ send
-the button as the remote would (up runs to the top by itself, down until stop), and
-*Reset* forgets the position, goes all the way up for `close_time` and starts again
-from 0 %. An up by hand or on the remote with the position unknown ends at 0 % too.
+the button as the remote would, whatever the hub reckons, and ■ stops it; the motor
+never stops on its own, so the hub sends stop itself after `close_time` or `open_time`
+at the latest. *Reset* forgets the position, goes up for the whole `close_time`, stops,
+and starts again from 0 %: the top is the one place it can find without knowing where
+it starts. An up on the remote with the position unknown ends at 0 % too, the remote's
+stop being yours to press.
 
 ## Adding a projector (Google TV)
 
