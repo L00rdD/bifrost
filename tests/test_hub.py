@@ -293,21 +293,30 @@ class CoverTest(unittest.TestCase):
         settle()
         self.assertEqual((self.sent(), screen()["position"]), ([], 0))  # the remote's stop is not the hub's
 
-    def test_reset_goes_all_the_way_up_then_starts_at_zero(self):
+    def test_declare_takes_the_position_without_moving(self):
         self.at(0)  # wrong: the screen is open, its code never arrived
-        start = time.time()
-        hub.on_message(self.sock, "bifrost/cover/screen/set", "RESET")
-        time.sleep(0.2)
-        self.assertEqual((screen()["position"], screen()["moving"]), (None, "up"))
+        hub.on_message(self.sock, "bifrost/cover/screen/declare", "100")
+        self.assertEqual(self.sent(), [])
+        self.assertEqual((screen()["position"], screen()["target"], screen()["moving"]), (100, 100, None))
+        self.assertEqual(self.published("position"), ["100"])
+        self.assertEqual(self.published("state"), ["STOPPED"])
+        hub.on_message(self.sock, "bifrost/cover/screen/set", "CLOSE")  # now a close knows its way
         settle()
-        self.assertAlmostEqual(time.time() - start, 0.5, delta=0.1)  # the whole close_time
-        self.assertEqual(self.sent(), ["5551 188", "5552 188"])
-        self.assertEqual((screen()["position"], screen()["target"], screen()["moving"]), (0, 0, None))
-        self.assertEqual(self.published("state"), ["DECREASING", "STOPPED", "STOPPED"])
+        self.assertEqual((self.sent(), screen()["position"]), (["5551 188", "5552 188"], 0))
 
-    def test_bad_press_is_ignored(self):
+    def test_declare_mid_move_stops_first(self):
+        self.at(0)
+        hub.move("screen", 100)
+        time.sleep(0.2)
+        hub.on_message(self.sock, "bifrost/cover/screen/declare", "0")
+        time.sleep(0.4)
+        self.assertEqual((self.sent(), screen()["position"], screen()["moving"]), (["5553 188", "5552 188"], 0, None))
+
+    def test_bad_press_and_declare_are_ignored(self):
         hub.on_message(self.sock, "bifrost/cover/screen/press", "left")
         hub.on_message(self.sock, "bifrost/cover/nope/press", "up")
+        hub.on_message(self.sock, "bifrost/cover/screen/declare", "101")
+        hub.on_message(self.sock, "bifrost/cover/screen/declare", "top")
         self.assertEqual(self.sock.published, [])
 
     def test_retained_position_is_restored(self):
@@ -544,21 +553,20 @@ class WebTest(unittest.TestCase):
         settle()
         self.assertEqual([p for t, p, _ in self.sock.published if t == "433/send"], ["5553 188", "5552 188"])
 
-    def test_post_presses_and_resets_the_cover(self):
+    def test_post_presses_and_declares_the_cover(self):
         with hub.lock:
             hub.state["covers"]["screen"]["pos"] = 100.0
         self.assertEqual(self.post("/api/covers/screen", '{"press": "up"}'), (202, {"id": "screen", "press": "up"}))
         settle()
-        self.assertEqual(self.post("/api/covers/screen", '{"reset": true}'), (202, {"id": "screen", "reset": True}))
-        settle()
-        self.assertEqual([p for t, p, _ in self.sock.published if t == "433/send"],
-                         ["5551 188", "5552 188", "5551 188", "5552 188"])
-        self.assertEqual(screen()["position"], 0)
+        self.assertEqual(self.post("/api/covers/screen", '{"declare": 100}'), (202, {"id": "screen", "declare": 100}))
+        self.assertEqual([p for t, p, _ in self.sock.published if t == "433/send"], ["5551 188", "5552 188"])
+        self.assertEqual(screen()["position"], 100)
 
     def test_post_cover_errors(self):
         self.assertEqual(self.post("/api/covers/nope", '{"position": 1}'), (404, {"error": "unknown cover"}))
         for body in ('{"position": 101}', '{"position": "50"}', '{"position": true}', '{"stop": false}', "[]",
-                     '{"press": "left"}', '{"press": "UP"}', '{"reset": false}', '{"press": "up", "stop": true}'):
+                     '{"press": "left"}', '{"press": "UP"}', '{"declare": 101}', '{"declare": "0"}',
+                     '{"press": "up", "stop": true}'):
             with self.subTest(body=body):
                 self.assertEqual(self.post("/api/covers/screen", body)[0], 400)
         self.assertEqual(self.sock.published, [])

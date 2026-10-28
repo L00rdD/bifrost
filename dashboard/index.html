@@ -117,11 +117,12 @@
     .controls button:hover { border-color: var(--accent); }
     .controls button:focus-visible, .cover input:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
     .controls button.stop { color: var(--down); }
-    /* by hand, as on the remote: the hub only follows; reset when the drawing and the screen disagree */
+    /* by hand, as on the remote; and "it is rolled up / open" when the drawing and the screen disagree */
     .controls.manual { margin-top: 8px; font-size: 0.8rem; color: var(--muted); }
     .controls.manual button { height: 30px; min-width: 36px; padding: 0 10px; font-size: 0.8rem; color: var(--muted); background: transparent; }
     .controls.manual button:hover { color: var(--text); }
-    .controls.manual button.reset { margin-left: auto; }
+    .controls.manual button.declare { margin-left: auto; }
+    .controls.manual button.declare + button.declare { margin-left: 0; }
     .cover input[type="range"] { width: 100%; margin: 14px 0 0; accent-color: var(--accent); }
     @media (max-width: 520px) { .cover { grid-template-columns: 1fr; } .screen { max-width: 180px; } }
 
@@ -395,7 +396,8 @@
         manual.append(el("span", "", "Manual"));
         for (const [label, body, cls, title] of [["▲", { press: "up" }, "", "up, as on the remote, whatever the drawing says: ■ stops it, the hub does after close_time at the latest"],
                                                   ["▼", { press: "down" }, "", "down, as on the remote, whatever the drawing says: ■ stops it, the hub does after open_time at the latest"],
-                                                  ["↺ Reset", { reset: true }, "reset", "the screen is not where it is drawn: forget it, all the way up, then 0 %"]]) {
+                                                  ["= rolled up", { declare: 0 }, "declare", "the screen is really rolled up at the top: the hub takes 0 %, nothing moves"],
+                                                  ["= open", { declare: 100 }, "declare", "the screen is really open at the projection height: the hub takes 100 %, nothing moves"]]) {
           const b = el("button", cls, label);
           b.title = title;
           b.addEventListener("click", () => moveCover(c.id, body));

@@ -21,8 +21,9 @@ and talks to the hub:
 | :--- | :--- | :--- |
 | `bifrost/outlet/<id>/set` | `ON` / `OFF` | the hub sends the outlet's code on `433/send` |
 | `bifrost/outlet/<id>/state` | `ON` / `OFF`, retained | from every code seen on `433/receive`: the remote, the Home app, the tracker, `make send` |
-| `bifrost/cover/<id>/set` | `0`-`100`, `OPEN`, `CLOSE`, `STOP`, `RESET` | moves a cover (the projection screen): 0 = rolled up, 100 = open; `RESET` forgets the position, goes all the way up and starts again from 0 |
-| `bifrost/cover/<id>/press` | `up`, `down`, `stop` | sends the button as the remote would, no timing: the hub follows it like a press on the remote |
+| `bifrost/cover/<id>/set` | `0`-`100`, `OPEN`, `CLOSE`, `STOP` | moves a cover (the projection screen): 0 = rolled up, 100 = open |
+| `bifrost/cover/<id>/press` | `up`, `down`, `stop` | sends the button as the remote would, whatever the hub reckons; its own stop follows after the measured time at the latest |
+| `bifrost/cover/<id>/declare` | `0`-`100` | where the cover really is: the hub takes it as its position, nothing moves |
 | `bifrost/projector/<id>/set`, `/key`, `/app/set` | `ON` / `OFF`, an Android key (`HOME`, `DPAD_UP`…), an app package | the hub drives the projector over adb |
 | `bifrost/projector/<id>/state`, `/app` | `ON` / `OFF`, the app in front, retained | from the hub's look at the projector every 5 s |
 | `bifrost/cover/<id>/position`, `/target`, `/state` | `0`-`100`, `0`-`100`, `INCREASING` / `DECREASING` / `STOPPED`, retained | where the hub reckons the cover is, for HomeKit and the hub's next start |
@@ -127,17 +128,16 @@ reaches the bottom of the screen, past 100 %: the estimate stops at 100.
 
 The dashboard and the home page card get the covers in `/api/status.json`, and
 `POST /api/covers/<id>` takes `{"position": 0-100}`, `{"stop": true}`, `{"press": "up"}`
-(or `down`, `stop`) and `{"reset": true}`.
+(or `down`, `stop`) and `{"declare": 0-100}`.
 
 The estimate goes wrong when the screen misses a code: the hub sent up, the bridge
 put it on the air, the screen stayed down, and the hub now reckons 0 % while the screen
 is open, so a close does nothing. The dashboard's *Manual* row is for that: ▲ and ▼ send
 the button as the remote would, whatever the hub reckons, and ■ stops it; the motor
 never stops on its own, so the hub sends stop itself after `close_time` or `open_time`
-at the latest. *Reset* forgets the position, goes up for the whole `close_time`, stops,
-and starts again from 0 %: the top is the one place it can find without knowing where
-it starts. An up on the remote with the position unknown ends at 0 % too, the remote's
-stop being yours to press.
+at the latest. Once the screen is where you want it, *= rolled up* or *= open* tells
+the hub so: it takes 0 % or 100 % as its position and nothing moves. An up on the
+remote with the position unknown ends at 0 % too, the remote's stop being yours to press.
 
 ## Adding a projector (Google TV)
 

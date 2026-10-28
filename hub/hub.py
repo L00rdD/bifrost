@@ -8,12 +8,12 @@ status of the whole thing for the d-mediaserver home page.
   POST :8582/api/outlets/<id>          -> {"on": true} switches the outlet, as /set does
 
   bifrost/cover/<id>/set     0-100 / OPEN / CLOSE / STOP -> moves the cover (0 = up, 100 = open)
-                             RESET -> forgets the position: all the way up, then 0 again
   bifrost/cover/<id>/press   up / down / stop -> the button as on the remote; stop comes by itself
                              once the measured time is over, the motor never stopping on its own
+  bifrost/cover/<id>/declare 0-100 -> where the cover really is, nothing moves: the estimate was wrong
   bifrost/cover/<id>/position, /target, /state           <- retained, for HomeKit and the next start
   POST :8582/api/covers/<id>           -> {"position": 100}, {"stop": true}, {"press": "up"} or
-                                          {"reset": true}, as /set and /press do
+                                          {"declare": 0}, as /set, /press and /declare do
 
   bifrost/projector/<id>/set  ON / OFF, /key  DPAD_UP..., /app/set  <package> -> over ADB
   bifrost/projector/<id>/state  ON / OFF, /app  <package>  <- retained, polled every 5 s
@@ -27,7 +27,7 @@ then stop when the time measured for that distance is over, and follows the remo
 presses the same way. The motor never stops on its own, not even at the top: every move
 the hub starts ends with a stop, at the latest when the measured time is over. When the
 estimate is wrong (a code the screen never got), /press moves it by hand as the remote
-would, and RESET goes all the way up for close_time and starts again from 0.
+would, and /declare tells the hub where the screen really is.
 
 The projector (Google TV) ignores power keys from the Google TV remote protocol, so the hub
 drives it with adb (network debugging on, this hub allowed once on the projector's screen).
@@ -300,12 +300,19 @@ def press(cid: str, key: str) -> None:
     _start(cid, _manual, key)
 
 
-def reset(cid: str) -> None:
-    """Forgets the position, wrong or not, and starts again: all the way up, then 0."""
-    log.info("%s -> reset", cid)
+def declare(cid: str, pos: int) -> None:
+    """Where the cover really is, from someone who sees it: the estimate starts again from there.
+    Nothing moves; a move under way is stopped first."""
+    log.info("%s = %s %% (declared)", cid, pos)
     with lock:
-        state["covers"][cid].update(pos=None, dir=0, lost=False)
-    move(cid, 0)
+        c = state["covers"][cid]
+        if c["run"]:
+            c["run"].set()
+            c["run"] = None
+        moving, c["lost"] = c["dir"], False
+    if moving:
+        _press(cid, "stop")
+    _cover_set(cid, 0, pos=float(pos), target=pos)
 
 
 def follow(cid: str, key: str) -> None:
@@ -331,12 +338,14 @@ def on_cover(topic: str, payload: str, retained: bool) -> None:
         if value not in ("UP", "DOWN", "STOP"):
             return log.warning("ignored %s = %r (not up, down or stop)", topic, payload)
         return press(cid, value.lower())
+    if cmd == "declare":
+        if not (value.isdigit() and int(value) <= 100):
+            return log.warning("ignored %s = %r (not 0-100)", topic, payload)
+        return declare(cid, int(value))
     if cmd == "set":
-        if value == "RESET":
-            return reset(cid)
         target = {"OPEN": 100, "CLOSE": 0, "STOP": None}.get(value, value)
         if target is not None and not (isinstance(target, int) or target.isdigit() and int(target) <= 100):
-            return log.warning("ignored %s = %r (not 0-100, OPEN, CLOSE, STOP or RESET)", topic, payload)
+            return log.warning("ignored %s = %r (not 0-100, OPEN, CLOSE or STOP)", topic, payload)
         return move(cid, None if target is None else int(target))
     if not retained:  # our own publishes coming back
         return
@@ -560,7 +569,7 @@ def listen() -> None:
                 kind, ack = _read(sock)
                 if kind >> 4 != 2 or ack[1] != 0:
                     raise ConnectionError(f"connection refused (code {ack[1]})")
-                topics = ("433/#", "bifrost/outlet/+/set", "bifrost/outlet/+/state", "bifrost/cover/+/set", "bifrost/cover/+/press",
+                topics = ("433/#", "bifrost/outlet/+/set", "bifrost/outlet/+/state", "bifrost/cover/+/set", "bifrost/cover/+/press", "bifrost/cover/+/declare",
                           "bifrost/cover/+/position", "bifrost/cover/+/state", "bifrost/projector/+/set",
                           "bifrost/projector/+/key", "bifrost/projector/+/app/set")
                 _send(sock, _packet(0x82, struct.pack("!H", 1) + b"".join(_str(t) + b"\x00" for t in topics)))
@@ -667,17 +676,15 @@ class Handler(SimpleHTTPRequestHandler):
                     raise ValueError
             elif len(body) != 1:
                 raise ValueError
-            elif body.get("stop") is True or body.get("reset") is True:
-                position = None
-            elif body.get("press") in ("up", "down", "stop"):
+            elif body.get("stop") is True or body.get("press") in ("up", "down", "stop"):
                 position = None
             else:
-                position = body["position"]
+                position = body["declare"] if "declare" in body else body["position"]
                 if type(position) is not int or not 0 <= position <= 100:
                     raise ValueError
         except (ValueError, KeyError, TypeError, AttributeError):
             return self._json(400, {"error": 'expected {"on": true} or {"on": false}' if outlet
-                                    else 'expected {"position": 0-100}, {"stop": true}, {"press": "up"} or {"reset": true}' if cover
+                                    else 'expected {"position": 0-100}, {"stop": true}, {"press": "up"} or {"declare": 0}' if cover
                                     else 'expected {"on": true}, {"key": "HOME"} or {"app": "<package>"}'})
         if projector:  # adb, not the broker
             projector_command(projector["id"], **body)
@@ -688,8 +695,8 @@ class Handler(SimpleHTTPRequestHandler):
         if cover:
             if "press" in body:
                 press(cover["id"], body["press"])
-            elif "reset" in body:
-                reset(cover["id"])
+            elif "declare" in body:
+                declare(cover["id"], position)
             else:
                 move(cover["id"], position)
             return self._json(202, {"id": cover["id"], **body})
