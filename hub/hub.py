@@ -15,8 +15,8 @@ status of the whole thing for the d-mediaserver home page.
   POST :8582/api/covers/<id>           -> {"position": 100}, {"stop": true}, {"press": "up"} or
                                           {"declare": 0}, as /set, /press and /declare do
 
-  bifrost/projector/<id>/set  ON / OFF, /key  DPAD_UP..., /app/set  <package> -> over ADB
-  bifrost/projector/<id>/state  ON / OFF, /app  <package>  <- retained, polled every 5 s
+  bifrost/projector/<id>/set  ON / OFF, /key  DPAD_UP..., /app/set  <package> or home -> over ADB
+  bifrost/projector/<id>/state  ON / OFF, /app  <package>, home or screensaver  <- retained, polled every 5 s
   POST :8582/api/projectors/<id>       -> {"on": true}, {"key": "HOME"} or {"app": "<package>"}
 
 The codes live in outlets.toml only. 433/receive carries both the remote's presses and
@@ -371,21 +371,27 @@ def adb(projector: dict, *args: str) -> str:
 
 
 SCREENSAVER = "screensaver"  # the app in front while the projector dreams
+HOME = "home"  # the app in front when it is the launcher, whichever it is; as an app to open, the HOME key
 
 
 def probe(projector: dict) -> tuple[bool, str | None]:
-    """Awake or asleep, and the app in front. Dreaming (the screensaver) is on: it still projects."""
+    """Awake or asleep, and the app in front. Dreaming (the screensaver) is on: it still projects.
+    The launcher is HOME: asked each time, it follows a change of launcher."""
     # asleep, no activity is resumed: the last grep finds nothing and fails, so the shell
     # exits 0 whatever it finds (and grep -m1 closing the pipe early is not an error either)
     out = adb(projector, "shell", "dumpsys power 2>/dev/null | grep -m1 mWakefulness=; "
-                                  "dumpsys activity activities 2>/dev/null | grep -m1 topResumedActivity=; true")
+                                  "dumpsys activity activities 2>/dev/null | grep -m1 topResumedActivity=; "
+                                  "cmd package resolve-activity --brief -a android.intent.action.MAIN "
+                                  "-c android.intent.category.HOME 2>/dev/null | tail -1; true")
     awake = re.search(r"mWakefulness=(\w+)", out)
     if not awake:
         raise OSError("adb: no power state from the projector")
     if awake.group(1) == "Dreaming":
         return True, SCREENSAVER
     app = re.search(r"topResumedActivity=\S*\{\S+ u\d+ ([\w.]+)/", out)
-    return awake.group(1) == "Awake", app.group(1) if app else None
+    home = re.search(r"^([\w.]+)/\S+$", out, re.M)
+    app = app and app.group(1)
+    return awake.group(1) == "Awake", HOME if app and home and app == home.group(1) else app
 
 
 def projector_seen(pid: str, on: bool | None, app: str | None, error: str | None) -> None:
@@ -479,7 +485,7 @@ def watch(pid: str) -> None:
 
 def projector_command(pid: str, on: bool | None = None, key: str | None = None, app: str | None = None) -> None:
     """Runs one order in the background (adb takes a second or two), then looks again.
-    key and app must have passed KEY_RE and PACKAGE_RE: they end up in a shell command."""
+    key and app must have passed KEY_RE and PACKAGE_RE (or be HOME): they end up in a shell command."""
     projector = PROJECTOR_BY_ID[pid]
 
     def run():
@@ -487,9 +493,9 @@ def projector_command(pid: str, on: bool | None = None, key: str | None = None, 
             with adb_locks[pid]:
                 if on is not None or app:  # SLEEP and WAKEUP, not POWER: sending one twice is harmless
                     adb(projector, "shell", f"input keyevent KEYCODE_{'WAKEUP' if on or app else 'SLEEP'}")
-                if key:
-                    adb(projector, "shell", f"input keyevent KEYCODE_{key}")
-                if app:
+                if key or app == HOME:
+                    adb(projector, "shell", f"input keyevent KEYCODE_{key or 'HOME'}")
+                elif app:
                     adb(projector, "shell", f"monkey -p {app} -c android.intent.category.LEANBACK_LAUNCHER 1")
             log.info("%s -> %s", pid, "ON" if on else "OFF" if on is False else key or app)
         except OSError as e:
@@ -507,7 +513,7 @@ def on_projector(topic: str, payload: str) -> None:
         return projector_command(pid, on=value.upper() == "ON")
     if cmd == "key" and KEY_RE.fullmatch(value.upper()):
         return projector_command(pid, key=value.upper())
-    if cmd == "app/set" and PACKAGE_RE.fullmatch(value):
+    if cmd == "app/set" and (value == HOME or PACKAGE_RE.fullmatch(value)):
         return projector_command(pid, app=value)
     log.warning("ignored %s = %r", topic, payload)
 
@@ -668,6 +674,7 @@ class Handler(SimpleHTTPRequestHandler):
             if projector:
                 if len(body) != 1 or not (isinstance(body.get("on"), bool)
                                           or isinstance(body.get("key"), str) and KEY_RE.fullmatch(body["key"])
+                                          or body.get("app") == HOME
                                           or isinstance(body.get("app"), str) and PACKAGE_RE.fullmatch(body["app"])):
                     raise ValueError
             elif outlet:

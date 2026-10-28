@@ -388,6 +388,11 @@ class ProjectorTest(unittest.TestCase):
         self.adb.out = ("  mWakefulness=Dreaming\n      topResumedActivity=ActivityRecord{8523068 u0 "
                         "com.google.android.apps.tv.dreamx/android.service.dreams.DreamActivity t4262}\n")
         self.assertEqual(hub.probe({}), (True, hub.SCREENSAVER))
+        self.adb.out = ("  mWakefulness=Awake\n      topResumedActivity=ActivityRecord{1 u0 com.l0rdd.pensieve/.HomeActivity t9}\n"
+                        "com.l0rdd.pensieve/.presentation.HomeActivity\n")
+        self.assertEqual(hub.probe({}), (True, hub.HOME))
+        self.adb.out = AWAKE + "com.l0rdd.pensieve/.presentation.HomeActivity\n"
+        self.assertEqual(hub.probe({}), (True, "com.netflix.ninja"))
         self.adb.out = "error: device offline"
         with self.assertRaises(OSError):
             hub.probe({})
@@ -469,6 +474,11 @@ class ProjectorTest(unittest.TestCase):
         self.wait_command()
         self.assertEqual(self.adb.commands, ["input keyevent KEYCODE_WAKEUP",
                                              "monkey -p com.netflix.ninja -c android.intent.category.LEANBACK_LAUNCHER 1"])
+
+    def test_home_wakes_the_projector_then_presses_home(self):
+        hub.on_message(self.sock, "bifrost/projector/projector/app/set", "home")
+        self.wait_command()
+        self.assertEqual(self.adb.commands, ["input keyevent KEYCODE_WAKEUP", "input keyevent KEYCODE_HOME"])
 
     def test_key(self):
         hub.on_message(self.sock, "bifrost/projector/projector/key", "dpad_up")

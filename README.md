@@ -24,8 +24,8 @@ and talks to the hub:
 | `bifrost/cover/<id>/set` | `0`-`100`, `OPEN`, `CLOSE`, `STOP` | moves a cover (the projection screen): 0 = rolled up, 100 = open |
 | `bifrost/cover/<id>/press` | `up`, `down`, `stop` | sends the button as the remote would, whatever the hub reckons; its own stop follows after the measured time at the latest |
 | `bifrost/cover/<id>/declare` | `0`-`100` | where the cover really is: the hub takes it as its position, nothing moves |
-| `bifrost/projector/<id>/set`, `/key`, `/app/set` | `ON` / `OFF`, an Android key (`HOME`, `DPAD_UP`…), an app package | the hub drives the projector over adb |
-| `bifrost/projector/<id>/state`, `/app` | `ON` / `OFF`, the app in front, retained | from the hub's look at the projector every 5 s |
+| `bifrost/projector/<id>/set`, `/key`, `/app/set` | `ON` / `OFF`, an Android key (`HOME`, `DPAD_UP`…), an app package or `home` (the HOME key) | the hub drives the projector over adb |
+| `bifrost/projector/<id>/state`, `/app` | `ON` / `OFF`, the app in front (`home` for the launcher, `screensaver`), retained | from the hub's look at the projector every 5 s |
 | `bifrost/cover/<id>/position`, `/target`, `/state` | `0`-`100`, `0`-`100`, `INCREASING` / `DECREASING` / `STOPPED`, retained | where the hub reckons the cover is, for HomeKit and the hub's next start |
 
 Retained means the broker keeps the last state: Homebridge gets it back as soon as it
@@ -156,7 +156,7 @@ stays: a change of mind does not roll it up and down.
 3. The projector asks to allow the hub's adb: tick "always", allow. `make adb`
    shows `device` once it is done (`unauthorized` before). The key stays in `data/adb`.
 
-The Home app gets a TV: on / off, the apps as inputs, and the iPhone's remote
+The Home app gets a TV: on / off, the launcher (`home`, "Home" if omitted) and the apps as inputs, and the iPhone's remote
 (control centre) for the arrows, select, back, play/pause, and its volume buttons
 for the sound. The dashboard's remote adds mute and settings. Standby keeps the network
 up on this projector, so it wakes from the Home app; a longer power cut and the hub

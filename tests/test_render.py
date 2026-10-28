@@ -48,7 +48,7 @@ class RenderTest(unittest.TestCase):
         self.assertIn("1 projector(s)", out)
         tv = config["accessories"][3]
         self.assertEqual((tv["type"], tv["name"], tv["onValue"]), ("television", "Projector", "ON"))
-        self.assertEqual(tv["inputs"][0], {"name": "Netflix", "value": "com.netflix.ninja"})
+        self.assertEqual(tv["inputs"][:2], [{"name": "Home", "value": "home"}, {"name": "Netflix", "value": "com.netflix.ninja"}])
         self.assertEqual(tv["topics"]["setRemoteKey"], "bifrost/projector/projector/key")
         self.assertEqual(len(tv["remoteKeyValues"]), 16)
         # the volume buttons send 0 and 1 of the same list

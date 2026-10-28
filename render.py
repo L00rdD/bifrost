@@ -51,7 +51,9 @@ for projector in devices.get("projector", []):
         "name": projector["name"],
         "topics": {"setActive": f"{base}/set", "getActive": f"{base}/state", "setActiveInput": f"{base}/app/set",
                    "getActiveInput": f"{base}/app", "setRemoteKey": f"{base}/key"},
-        "inputs": [{"name": name, "value": package} for name, package in projector.get("apps", {}).items()],
+        # first the launcher, whichever it is: the hub sends HOME and reports "home" when it is in front
+        "inputs": [{"name": projector.get("home", "Home"), "value": "home"},
+                   *({"name": name, "value": package} for name, package in projector.get("apps", {}).items())],
         "onValue": "ON",
         "offValue": "OFF",
         # HomeKit's keys in its order (rewind, fast forward, next, previous, up, down, left, right,
