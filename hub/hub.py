@@ -92,6 +92,10 @@ MIRROR_PORT = 27183   # the first projector's local end of the adb forward, the 
 MIRROR_SIZE = 1280    # px, the longest side
 MIRROR_FPS = 15
 MIRROR_LINGER = 10    # s the mirror keeps running once nobody watches: a reload does not restart it
+# H.264 in, JPEGs out. yuvj420p: the JPEG encoder takes only full-range colours, and the projector
+# sends limited range. No -fflags nobuffer nor -flags low_delay: with either, no picture comes out.
+TO_MJPEG = ["-loglevel", "error", "-probesize", "32", "-analyzeduration", "0", "-f", "h264", "-i", "pipe:0",
+            "-pix_fmt", "yuvj420p", "-f", "image2pipe", "-c:v", "mjpeg", "-q:v", "6", "pipe:1"]
 MIRROR_START = 15     # s for the first picture, else the viewer gets an error
 REVERSE_PAUSE = 0.5   # s between stop and the other direction
 ECHO_WINDOW = 3       # s: the bridge repeats what it sends on 433/receive
@@ -611,7 +615,7 @@ class Mirror:
                     self.cond.wait_for(lambda: self.seq != seen or not self.running, timeout=MIRROR_START)
                     if self.seq == seen:
                         if not self.running or seen == 0:  # stopped, or no first picture in time
-                            raise OSError(self.error or "the projector sends no picture")
+                            raise OSError(self.error or (self.said[-1] if self.said else "the projector sends no picture"))
                         continue
                     seen, frame = self.seq, self.frame
                 yield frame
@@ -639,7 +643,7 @@ class Mirror:
         while time.monotonic() < deadline:
             if server.poll() is not None:
                 time.sleep(0.2)  # its last words reach self.said
-                raise OSError("scrcpy: " + (self.said[-1] if self.said else f"server exit {server.returncode}"))
+                raise OSError(self.said[-1] if self.said else f"scrcpy: server exit {server.returncode}")
             try:
                 sock = socket.create_connection(("127.0.0.1", self.port), timeout=5)
                 first = sock.recv(65536)
@@ -666,14 +670,13 @@ class Mirror:
                  f"max_size={MIRROR_SIZE} max_fps={MIRROR_FPS} video_bit_rate=4000000"],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             self.procs.append(server)
-            threading.Thread(target=self._listen, args=(server,), daemon=True).start()
+            threading.Thread(target=self._listen, args=(server, "scrcpy"), daemon=True).start()
             self.sock, first = self._connect(server)
             ffmpeg = subprocess.Popen(
-                [FFMPEG, "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay", "-probesize", "32",
-                 "-analyzeduration", "0", "-f", "h264", "-i", "pipe:0", "-f", "image2pipe", "-c:v", "mjpeg",
-                 "-q:v", "6", "pipe:1"],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                [FFMPEG, *TO_MJPEG],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             self.procs.append(ffmpeg)
+            threading.Thread(target=self._listen, args=(ffmpeg, "ffmpeg"), daemon=True).start()
             threading.Thread(target=self._pump, args=(self.sock, first, ffmpeg), daemon=True).start()
             threading.Thread(target=self._linger, daemon=True).start()
             log.info("%s: mirroring the screen", projector["id"])
@@ -710,11 +713,13 @@ class Mirror:
                 self.cond.notify_all()
             log.info("%s: mirror stopped", projector["id"])
 
-    def _listen(self, server: subprocess.Popen) -> None:
-        """Keeps the server's last lines for the errors, and its pipe empty so it never blocks on it."""
-        for line in server.stderr:
+    def _listen(self, proc: subprocess.Popen, name: str) -> None:
+        """Keeps the last lines of the scrcpy server or ffmpeg for the errors, and logs them: its pipe
+        stays empty, so it never blocks on it."""
+        for line in proc.stderr:
             if line := line.decode(errors="replace").strip():
                 self.said.append(line)
+                log.warning("%s: %s: %s", self.projector["id"], name, line)
 
     def _pump(self, sock: socket.socket, first: bytes, ffmpeg: subprocess.Popen) -> None:
         """The H.264 from the projector into ffmpeg."""
@@ -909,6 +914,7 @@ class Handler(SimpleHTTPRequestHandler):
             first = next(frames)  # an error before any byte goes out still gets its status
         except OSError as e:
             frames.close()
+            log.warning("%s: no screen for the viewer: %s", mirror.projector["id"], e)
             return self._json(503, {"error": str(e)})
         self.send_response(200)
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")

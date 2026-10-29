@@ -1,7 +1,9 @@
 import json
 import os
+import shutil
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -722,6 +724,14 @@ class MirrorTest(unittest.TestCase):
         time.sleep(2.5)  # MIRROR_LINGER, checked every second
         self.assertFalse(self.mirror.running)
         self.assertEqual(len(self.clients), 1)  # one stream for both viewers
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "no ffmpeg here")
+    def test_ffmpeg_turns_h264_into_jpegs(self):
+        h264 = subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=15", "-t", "1",
+                               "-c:v", "libx264", "-bf", "0", "-f", "h264", "pipe:1"], capture_output=True, check=True).stdout
+        out = subprocess.run(["ffmpeg", *hub.TO_MJPEG], input=h264, capture_output=True, timeout=30)
+        frames, _ = hub.split_jpegs(out.stdout)
+        self.assertEqual(len(frames), 15, out.stderr.decode())
 
     def test_no_picture_is_an_error(self):
         self.listener.close()
