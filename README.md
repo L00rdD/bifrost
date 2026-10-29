@@ -80,6 +80,16 @@ The POST only takes JSON and has no CORS header, so a page from another site can
 switch the outlets through a visitor's browser. It has no login: anyone on the home
 network can switch them, as with the remote.
 
+## The projector's screen
+
+The projector card's **Screen** button shows what the projector shows, live, as Vysor
+would, and a click on the picture taps the projector there. The hub pushes the
+[scrcpy](https://github.com/Genymobile/scrcpy) server to the projector over adb and runs it
+only while someone watches: H.264 at 1280 px and 15 fps, which ffmpeg turns into an MJPEG
+stream at `GET /api/projectors/<id>/screen.mjpg`. It stops 10 s after the last viewer leaves.
+Netflix and the other DRM apps show black, as with any mirroring. A new scrcpy version goes in
+`hub/Dockerfile` with its sha256 from the release page.
+
 ## Tests
 
 ```sh

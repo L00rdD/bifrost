@@ -347,10 +347,16 @@ class FakeAdb:
 
     def __init__(self, out=AWAKE):
         self.out, self.fail, self.commands, self.done = out, None, [], threading.Event()
+        self.misses = 0  # that many calls fail first, as from a projector asleep for long
 
     def __call__(self, projector, *args):
         if self.fail:
             raise OSError(self.fail)
+        if self.misses:
+            self.misses -= 1
+            raise OSError("adb: no answer in 10 s")
+        if args[-1] == "wm size":
+            return "Physical size: 3840x2160\nOverride size: 1920x1080\n"
         if "dumpsys" not in args[-1]:
             self.commands.append(args[-1])
             self.done.set()
@@ -369,9 +375,13 @@ class ProjectorTest(unittest.TestCase):
         self.adb, self.real_adb, self.real_move = FakeAdb(), hub.adb, hub.move
         self.moves = []
         hub.adb, hub.move = self.adb, lambda cid, target, press=True: self.moves.append((cid, target))
+        self.reconnects, self.real = 0, (hub.reconnect, hub.WAKE_FOR, hub.WAKE_RETRY)
+        hub.reconnect = lambda projector: setattr(self, "reconnects", self.reconnects + 1)
+        hub.WAKE_FOR, hub.WAKE_RETRY = 1, 0.05
 
     def tearDown(self):
         hub.adb, hub.move, hub.conn = self.real_adb, self.real_move, None
+        hub.reconnect, hub.WAKE_FOR, hub.WAKE_RETRY = self.real
 
     def wait_command(self):
         self.assertTrue(self.adb.done.wait(2), "no adb command")
@@ -497,8 +507,46 @@ class ProjectorTest(unittest.TestCase):
     def test_adb_failure_is_logged_not_raised(self):
         self.adb.fail = "adb: device unauthorized"
         hub.on_message(self.sock, "bifrost/projector/projector/set", "ON")
-        time.sleep(0.2)
+        time.sleep(1.2)  # past WAKE_FOR
         self.assertEqual(self.adb.commands, [])
+
+    def test_on_tries_again_until_the_projector_answers(self):
+        self.adb.misses = 3
+        hub.on_message(self.sock, "bifrost/projector/projector/set", "ON")
+        self.wait_command()
+        self.assertEqual(self.adb.commands, ["input keyevent KEYCODE_WAKEUP"])
+        self.assertEqual(self.reconnects, 3)  # a dead connection is dropped before each new try
+
+    def test_app_launches_once_the_projector_woke(self):
+        self.adb.misses = 2
+        hub.on_message(self.sock, "bifrost/projector/projector/app/set", "com.netflix.ninja")
+        self.assertTrue(self.adb.done.wait(2))
+        time.sleep(0.1)
+        self.assertEqual(self.adb.commands, ["input keyevent KEYCODE_WAKEUP",
+                                             "monkey -p com.netflix.ninja -c android.intent.category.LEANBACK_LAUNCHER 1"])
+
+    def test_a_newer_order_ends_the_tries(self):
+        self.adb.misses = 1000
+        hub.on_message(self.sock, "bifrost/projector/projector/set", "ON")
+        time.sleep(0.1)
+        hub.on_message(self.sock, "bifrost/projector/projector/set", "OFF")
+        time.sleep(0.1)
+        self.adb.misses = 0
+        self.wait_command()
+        time.sleep(0.2)
+        self.assertEqual(self.adb.commands, ["input keyevent KEYCODE_SLEEP"])  # no WAKEUP after the OFF
+
+    def test_tap_lands_on_the_screen_the_projector_renders(self):
+        hub.projector_command("projector", tap=(0.5, 1))
+        self.wait_command()
+        self.assertEqual(self.adb.commands, ["input tap 960 1079"])  # the 1080p override, not the 4K panel
+
+    def test_a_key_does_not_end_the_tries(self):
+        self.adb.misses = 2
+        hub.on_message(self.sock, "bifrost/projector/projector/set", "ON")
+        hub.on_message(self.sock, "bifrost/projector/projector/key", "VOLUME_UP")
+        time.sleep(0.5)
+        self.assertIn("input keyevent KEYCODE_WAKEUP", self.adb.commands)
 
 
 class WebTest(unittest.TestCase):
@@ -588,7 +636,12 @@ class WebTest(unittest.TestCase):
             self.assertEqual(self.post("/api/projectors/projector", '{"key": "HOME"}'), (202, {"id": "projector", "key": "HOME"}))
             self.assertTrue(fake.done.wait(2))
             self.assertEqual(fake.commands, ["input keyevent KEYCODE_HOME"])
-            for body in ('{"key": "HOME; reboot"}', '{"app": "a b"}', '{"on": 1}', '{"on": true, "key": "HOME"}', "{}"):
+            fake.done.clear()
+            self.assertEqual(self.post("/api/projectors/projector", '{"tap": [0, 0.25]}')[0], 202)
+            self.assertTrue(fake.done.wait(2))
+            self.assertEqual(fake.commands[-1], "input tap 0 270")
+            for body in ('{"tap": [0.5]}', '{"tap": [1.5, 0]}', '{"tap": [true, 0]}', '{"tap": ["0; reboot", 0]}', '{"tap": "1 1"}',
+                         '{"key": "HOME; reboot"}', '{"app": "a b"}', '{"on": 1}', '{"on": true, "key": "HOME"}', "{}"):
                 with self.subTest(body=body):
                     self.assertEqual(self.post("/api/projectors/projector", body)[0], 400)
             self.assertEqual(self.post("/api/projectors/nope", '{"on": true}'), (404, {"error": "unknown projector"}))
@@ -609,3 +662,68 @@ class WebTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+JPEG_A = b"\xff\xd8a-frame\xff\xd9"
+JPEG_B = b"\xff\xd8b-frame\xff\xd9"
+
+
+class MirrorTest(unittest.TestCase):
+    """The mirror end to end, with a script for adb, cat for ffmpeg, and a TCP server for the
+    projector's end of the forward that sends JPEGs (cat passes them through)."""
+
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.TemporaryDirectory()
+        adb = Path(self.dir.name, "adb")
+        adb.write_text('#!/bin/sh\n[ "$3" = shell ] && exec sleep 30\nexit 0\n')
+        ffmpeg = Path(self.dir.name, "ffmpeg")
+        ffmpeg.write_text("#!/bin/sh\nexec cat\n")
+        adb.chmod(0o755), ffmpeg.chmod(0o755)
+        self.real = (hub.ADB, hub.FFMPEG, hub.adb, hub.MIRROR_LINGER, hub.MIRROR_START)
+        hub.ADB, hub.FFMPEG, hub.adb = str(adb), str(ffmpeg), FakeAdb()
+        hub.MIRROR_LINGER, hub.MIRROR_START = 1, 3
+        self.listener = socket.create_server(("127.0.0.1", 0))
+        self.mirror = hub.Mirror(hub.PROJECTOR_BY_ID["projector"], self.listener.getsockname()[1])
+        self.clients = []
+        threading.Thread(target=self.projector, daemon=True).start()
+
+    def projector(self):
+        while True:
+            try:
+                c, _ = self.listener.accept()
+            except OSError:
+                return
+            self.clients.append(c)
+            c.sendall(JPEG_A[:5])  # a JPEG cut in two
+            time.sleep(0.1)
+            c.sendall(JPEG_A[5:] + JPEG_B)
+
+    def tearDown(self):
+        self.listener.close()
+        for c in self.clients:
+            c.close()
+        hub.ADB, hub.FFMPEG, hub.adb, hub.MIRROR_LINGER, hub.MIRROR_START = self.real
+        self.dir.cleanup()
+
+    def test_split_jpegs(self):
+        self.assertEqual(hub.split_jpegs(JPEG_A + JPEG_B[:4]), ([JPEG_A], JPEG_B[:4]))
+        self.assertEqual(hub.split_jpegs(b"junk" + JPEG_A), ([JPEG_A], b""))
+
+    def test_viewers_get_the_frames_and_the_mirror_stops_once_alone(self):
+        frames = self.mirror.watch()
+        got = [next(frames)]
+        if got[0] != JPEG_B:  # the two may come in one read: only the latest is kept
+            got.append(next(frames))
+        self.assertEqual(got[-1], JPEG_B)
+        late = self.mirror.watch()
+        self.assertEqual(next(late), JPEG_B)  # a second viewer starts with the latest picture
+        frames.close(), late.close()
+        time.sleep(2.5)  # MIRROR_LINGER, checked every second
+        self.assertFalse(self.mirror.running)
+        self.assertEqual(len(self.clients), 1)  # one stream for both viewers
+
+    def test_no_picture_is_an_error(self):
+        self.listener.close()
+        with self.assertRaises(OSError):
+            next(self.mirror.watch())

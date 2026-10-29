@@ -17,7 +17,9 @@ status of the whole thing for the d-mediaserver home page.
 
   bifrost/projector/<id>/set  ON / OFF, /key  DPAD_UP..., /app/set  <package> or home -> over ADB
   bifrost/projector/<id>/state  ON / OFF, /app  <package>, home or screensaver  <- retained, polled every 5 s
-  POST :8582/api/projectors/<id>       -> {"on": true}, {"key": "HOME"} or {"app": "<package>"}
+  POST :8582/api/projectors/<id>       -> {"on": true}, {"key": "HOME"}, {"app": "<package>"} or
+                                          {"tap": [x, y]} (0-1 across the screen, from the top left)
+  GET :8582/api/projectors/<id>/screen.mjpg  -> what the projector shows, as Vysor would (MJPEG)
 
 The codes live in outlets.toml only. 433/receive carries both the remote's presses and
 every code the bridge sends, so the state follows whoever switched the outlet.
@@ -31,16 +33,25 @@ would, and /declare tells the hub where the screen really is.
 
 The projector (Google TV) ignores power keys from the Google TV remote protocol, so the hub
 drives it with adb (network debugging on, this hub allowed once on the projector's screen).
+Asleep for long, its Wi-Fi lets adb through only now and then: an ON or OFF tries again for
+3 minutes, dropping the dead connection adb keeps between two tries.
 When it turns on, from anywhere, its screen comes down; when it has been off for 5 minutes,
 the screen goes up (turned back on before that, the screen stays).
 
-Standard library only, plus the adb binary: a minimal MQTT 3.1.1 client (connect,
+The screen comes from the scrcpy server, pushed to the projector and started only while someone
+watches: it sends H.264, ffmpeg turns it into JPEGs that any browser shows, iPhone included, with
+no HTTPS. Netflix and the other DRM apps show black, as with any mirroring.
+
+Standard library only, plus the adb, ffmpeg and scrcpy-server binaries: a minimal MQTT 3.1.1 client (connect,
 subscribe, QoS 0 publishes, ping) is all the hub needs."""
 from __future__ import annotations
 
+import collections
+import itertools
 import json
 import logging
 import os
+import random
 import re
 import socket
 import struct
@@ -68,10 +79,20 @@ PROJECTORS = CONFIG.get("projector", [])
 PROJECTOR_BY_ID = {p["id"]: p for p in PROJECTORS}
 ADB = os.environ.get("ADB", "adb")
 PROJECTOR_POLL = 5  # s between two looks at the projector
+WAKE_FOR = 180      # s an ON or OFF keeps trying: in deep sleep the projector's Wi-Fi answers adb only now and then
+WAKE_RETRY = 2      # s between two tries
 CLOSE_AFTER = 300   # s off before the screen goes up: a change of mind does not roll it up and down
 # adb shell goes through a shell on the projector: only these ever reach it from a payload
 KEY_RE = re.compile(r"[A-Z][A-Z0-9_]{0,39}")
 PACKAGE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+")
+SCRCPY_SERVER = os.environ.get("SCRCPY_SERVER", "/opt/scrcpy-server.jar")  # from the Dockerfile
+SCRCPY_VERSION = os.environ.get("SCRCPY_VERSION", "5.0.1")  # the server refuses any other client version
+FFMPEG = os.environ.get("FFMPEG", "ffmpeg")
+MIRROR_PORT = 27183   # the first projector's local end of the adb forward, the next one +1...
+MIRROR_SIZE = 1280    # px, the longest side
+MIRROR_FPS = 15
+MIRROR_LINGER = 10    # s the mirror keeps running once nobody watches: a reload does not restart it
+MIRROR_START = 15     # s for the first picture, else the viewer gets an error
 REVERSE_PAUSE = 0.5   # s between stop and the other direction
 ECHO_WINDOW = 3       # s: the bridge repeats what it sends on 433/receive
 log = logging.getLogger("hub")
@@ -85,6 +106,7 @@ state = {"broker": False, "bridge_seen": None, "last_code": None, "outlets": {},
          "projectors": {p["id"]: {"on": None, "known": None, "app": None, "error": None, "at": None, "closes_at": None}
                         for p in PROJECTORS}}
 pokes = {p["id"]: threading.Event() for p in PROJECTORS}      # look at the projector now
+orders = {p["id"]: 0 for p in PROJECTORS}                      # the last order's number: a newer one ends the tries of an older
 adb_locks = {p["id"]: threading.Lock() for p in PROJECTORS}   # one adb command at a time
 lock = threading.Lock()
 conn: socket.socket | None = None  # the broker connection, shared with the web server
@@ -466,6 +488,16 @@ def _close_later(pid: str) -> None:
     timer.start()
 
 
+def reconnect(projector: dict) -> None:
+    """Drops the connection and opens a new one. Asleep for long, the projector leaves adb a dead
+    connection ("offline", or no answer) that a plain connect keeps ("already connected")."""
+    for cmd in ("disconnect", "connect"):
+        try:
+            subprocess.run([ADB, cmd, projector["adb"]], capture_output=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
 def watch(pid: str) -> None:
     projector = PROJECTOR_BY_ID[pid]
     while True:
@@ -475,33 +507,239 @@ def watch(pid: str) -> None:
             projector_seen(pid, on, app, None)
         except OSError as e:
             projector_seen(pid, None, None, str(e))
-            try:  # asleep for long, rebooted, or the hub just started: (re)connect
-                subprocess.run([ADB, "connect", projector["adb"]], capture_output=True, timeout=10)
-            except (OSError, subprocess.SubprocessError):
-                pass
+            reconnect(projector)
         pokes[pid].wait(PROJECTOR_POLL)
         pokes[pid].clear()
 
 
-def projector_command(pid: str, on: bool | None = None, key: str | None = None, app: str | None = None) -> None:
+def screen_size(projector: dict) -> tuple[int, int]:
+    """The size taps are given in: the override when the projector renders below its panel."""
+    out = adb(projector, "shell", "wm size")
+    sizes = dict(re.findall(r"(Physical|Override) size: (\d+x\d+)", out))
+    size = sizes.get("Override") or sizes.get("Physical")
+    if not size:
+        raise OSError("adb: no screen size from the projector")
+    w, h = size.split("x")
+    return int(w), int(h)
+
+
+def projector_command(pid: str, on: bool | None = None, key: str | None = None, app: str | None = None,
+                      tap: tuple[float, float] | None = None) -> None:
     """Runs one order in the background (adb takes a second or two), then looks again.
     key and app must have passed KEY_RE and PACKAGE_RE (or be HOME): they end up in a shell command."""
     projector = PROJECTOR_BY_ID[pid]
 
+    with lock:
+        if on is not None or app:
+            orders[pid] += 1
+        order = orders[pid]
+
+    def power() -> None:
+        """WAKEUP or SLEEP until the projector takes it, for WAKE_FOR at most: asleep for long, its
+        Wi-Fi lets adb through only now and then. A newer order ends the tries."""
+        deadline, tries = time.monotonic() + WAKE_FOR, 0
+        while True:
+            try:
+                with adb_locks[pid]:  # SLEEP and WAKEUP, not POWER: sending one twice is harmless
+                    adb(projector, "shell", f"input keyevent KEYCODE_{'WAKEUP' if on or app else 'SLEEP'}")
+                return
+            except OSError as e:
+                if time.monotonic() + WAKE_RETRY >= deadline or orders[pid] != order:
+                    raise
+                if not tries:
+                    log.info("%s: %s, trying again for %d s", pid, e, WAKE_FOR)
+                tries += 1
+                reconnect(projector)
+                time.sleep(WAKE_RETRY)
+                if orders[pid] != order:
+                    raise OSError("a newer order came") from e
+
     def run():
         try:
+            if on is not None or app:
+                power()
             with adb_locks[pid]:
-                if on is not None or app:  # SLEEP and WAKEUP, not POWER: sending one twice is harmless
-                    adb(projector, "shell", f"input keyevent KEYCODE_{'WAKEUP' if on or app else 'SLEEP'}")
+                if tap:
+                    w, h = screen_size(projector)
+                    adb(projector, "shell", f"input tap {round(tap[0] * (w - 1))} {round(tap[1] * (h - 1))}")
                 if key or app == HOME:
                     adb(projector, "shell", f"input keyevent KEYCODE_{key or 'HOME'}")
                 elif app:
                     adb(projector, "shell", f"monkey -p {app} -c android.intent.category.LEANBACK_LAUNCHER 1")
-            log.info("%s -> %s", pid, "ON" if on else "OFF" if on is False else key or app)
+            if not tap:  # a tap is no news
+                log.info("%s -> %s", pid, "ON" if on else "OFF" if on is False else key or app)
         except OSError as e:
             log.warning("%s: %s", pid, e)
         pokes[pid].set()
     threading.Thread(target=run, daemon=True, name=f"projector-{pid}").start()
+
+
+def split_jpegs(buf: bytes) -> tuple[list[bytes], bytes]:
+    """The whole JPEGs at the start of buf, and what is left. FF D9 ends a JPEG and appears nowhere
+    else in one (the coded data escapes FF bytes)."""
+    frames = []
+    while (end := buf.find(b"\xff\xd9")) != -1:
+        start = buf.find(b"\xff\xd8")
+        if 0 <= start < end:
+            frames.append(buf[start:end + 2])
+        buf = buf[end + 2:]
+    return frames, buf
+
+
+class Mirror:
+    """What the projector shows, while someone watches: the scrcpy server on the projector streams
+    H.264 through an adb forward, ffmpeg turns it into JPEGs, the viewers get the latest one.
+    The first viewer starts it, it stops MIRROR_LINGER s after the last one left."""
+
+    def __init__(self, projector: dict, port: int):
+        self.projector, self.port = projector, port
+        self.cond = threading.Condition()
+        self.frame, self.seq, self.viewers, self.idle_since = None, 0, 0, 0.0
+        self.running, self.error, self.procs, self.sock, self.said = False, None, [], None, collections.deque(maxlen=5)
+
+    def watch(self):
+        """The JPEGs as they come, the latest one first. Ends when the mirror stops."""
+        with self.cond:
+            self.viewers += 1
+            if not self.running:
+                self.running, self.error, self.frame, self.seq = True, None, None, 0
+                threading.Thread(target=self._run, daemon=True, name=f"mirror-{self.projector['id']}").start()
+        try:
+            seen = 0
+            while True:
+                with self.cond:
+                    self.cond.wait_for(lambda: self.seq != seen or not self.running, timeout=MIRROR_START)
+                    if self.seq == seen:
+                        if not self.running or seen == 0:  # stopped, or no first picture in time
+                            raise OSError(self.error or "the projector sends no picture")
+                        continue
+                    seen, frame = self.seq, self.frame
+                yield frame
+        finally:
+            with self.cond:
+                self.viewers -= 1
+                self.idle_since = time.monotonic()
+
+    def _stop(self, error: str | None = None) -> None:
+        with self.cond:
+            if error and not self.error:
+                self.error = error
+        for proc in self.procs:
+            if proc.poll() is None:
+                proc.kill()
+        if self.sock:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+
+    def _connect(self, server: subprocess.Popen) -> tuple[socket.socket, bytes]:
+        """The forward takes connections before the server listens, and drops them: try until it sends."""
+        deadline = time.monotonic() + MIRROR_START
+        while time.monotonic() < deadline:
+            if server.poll() is not None:
+                time.sleep(0.2)  # its last words reach self.said
+                raise OSError("scrcpy: " + (self.said[-1] if self.said else f"server exit {server.returncode}"))
+            try:
+                sock = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+                first = sock.recv(65536)
+                if first:
+                    sock.settimeout(None)
+                    return sock, first
+                sock.close()
+            except OSError:
+                pass
+            time.sleep(0.3)
+        raise OSError("scrcpy: the server did not start")
+
+    def _run(self) -> None:
+        projector, jar = self.projector, "/data/local/tmp/bifrost-scrcpy.jar"
+        self.procs, self.sock, self.said = [], None, collections.deque(maxlen=5)
+        scid = f"{random.getrandbits(31):08x}"  # its own socket name: a server left over cannot take it
+        try:
+            with adb_locks[projector["id"]]:
+                adb(projector, "push", SCRCPY_SERVER, jar)
+                adb(projector, "forward", f"tcp:{self.port}", f"localabstract:scrcpy_{scid}")
+            server = subprocess.Popen(
+                [ADB, "-s", projector["adb"], "shell", f"CLASSPATH={jar} app_process / com.genymobile.scrcpy.Server "
+                 f"{SCRCPY_VERSION} scid={scid} tunnel_forward=true audio=false control=false cleanup=false raw_stream=true "
+                 f"max_size={MIRROR_SIZE} max_fps={MIRROR_FPS} video_bit_rate=4000000"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            self.procs.append(server)
+            threading.Thread(target=self._listen, args=(server,), daemon=True).start()
+            self.sock, first = self._connect(server)
+            ffmpeg = subprocess.Popen(
+                [FFMPEG, "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay", "-probesize", "32",
+                 "-analyzeduration", "0", "-f", "h264", "-i", "pipe:0", "-f", "image2pipe", "-c:v", "mjpeg",
+                 "-q:v", "6", "pipe:1"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            self.procs.append(ffmpeg)
+            threading.Thread(target=self._pump, args=(self.sock, first, ffmpeg), daemon=True).start()
+            threading.Thread(target=self._linger, daemon=True).start()
+            log.info("%s: mirroring the screen", projector["id"])
+            buf = b""
+            while chunk := ffmpeg.stdout.read1(65536):
+                frames, buf = split_jpegs(buf + chunk)
+                if frames:
+                    with self.cond:
+                        self.frame, self.seq = frames[-1], self.seq + 1
+                        self.cond.notify_all()
+        except (OSError, subprocess.SubprocessError) as e:
+            self._stop(str(e))
+            log.warning("%s: mirror: %s", projector["id"], e)
+        finally:
+            self._stop()
+            for proc in self.procs:  # no zombie, no pipe left open
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+                for pipe in (proc.stdin, proc.stdout, proc.stderr):
+                    if pipe:
+                        try:
+                            pipe.close()
+                        except OSError:
+                            pass
+            try:
+                subprocess.run([ADB, "-s", projector["adb"], "forward", "--remove", f"tcp:{self.port}"],
+                               capture_output=True, timeout=10)
+            except (OSError, subprocess.SubprocessError):
+                pass
+            with self.cond:
+                self.running = False
+                self.cond.notify_all()
+            log.info("%s: mirror stopped", projector["id"])
+
+    def _listen(self, server: subprocess.Popen) -> None:
+        """Keeps the server's last lines for the errors, and its pipe empty so it never blocks on it."""
+        for line in server.stderr:
+            if line := line.decode(errors="replace").strip():
+                self.said.append(line)
+
+    def _pump(self, sock: socket.socket, first: bytes, ffmpeg: subprocess.Popen) -> None:
+        """The H.264 from the projector into ffmpeg."""
+        try:
+            data = first
+            while data:
+                ffmpeg.stdin.write(data)
+                ffmpeg.stdin.flush()
+                data = sock.recv(65536)
+        except (OSError, ValueError):
+            pass
+        self._stop()
+
+    def _linger(self) -> None:
+        while True:
+            time.sleep(1)
+            with self.cond:
+                if not self.running:
+                    return
+                if not self.viewers and time.monotonic() - self.idle_since >= MIRROR_LINGER:
+                    break
+        self._stop()
+
+
+mirrors = {p["id"]: Mirror(p, MIRROR_PORT + i) for i, p in enumerate(PROJECTORS)}
 
 
 def on_projector(topic: str, payload: str) -> None:
@@ -653,9 +891,38 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path.split("?", 1)[0] in ("/api/status.json", "/health"):
+        path = self.path.split("?", 1)[0]
+        if path in ("/api/status.json", "/health"):
             return self._json(200, snapshot(), cors=True)
+        parts = path.strip("/").split("/")
+        if len(parts) == 4 and parts[:2] == ["api", "projectors"] and parts[3] == "screen.mjpg":
+            if parts[2] not in mirrors:
+                return self._json(404, {"error": "unknown projector"})
+            return self._mirror(mirrors[parts[2]])
         return super().do_GET()
+
+    def _mirror(self, mirror: Mirror) -> None:
+        """MJPEG: one JPEG after the other in a never-ending response, which <img> shows as video.
+        No CORS: another site can show it but not read it."""
+        frames = mirror.watch()
+        try:
+            first = next(frames)  # an error before any byte goes out still gets its status
+        except OSError as e:
+            frames.close()
+            return self._json(503, {"error": str(e)})
+        self.send_response(200)
+        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+        self.end_headers()
+        try:
+            for frame in itertools.chain([first], frames):
+                self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n%b\r\n"
+                                 % (len(frame), frame))
+                self.wfile.flush()
+        except OSError:  # the viewer left, or the mirror stopped
+            pass
+        finally:
+            frames.close()
+            self.close_connection = True
 
     def do_POST(self):
         # No CORS here, and JSON only: a browser asks first (preflight) before posting JSON to
@@ -675,7 +942,9 @@ class Handler(SimpleHTTPRequestHandler):
                 if len(body) != 1 or not (isinstance(body.get("on"), bool)
                                           or isinstance(body.get("key"), str) and KEY_RE.fullmatch(body["key"])
                                           or body.get("app") == HOME
-                                          or isinstance(body.get("app"), str) and PACKAGE_RE.fullmatch(body["app"])):
+                                          or isinstance(body.get("app"), str) and PACKAGE_RE.fullmatch(body["app"])
+                                          or isinstance(body.get("tap"), list) and len(body["tap"]) == 2
+                                          and all(type(v) in (int, float) and 0 <= v <= 1 for v in body["tap"])):
                     raise ValueError
             elif outlet:
                 on = body["on"]
@@ -692,7 +961,7 @@ class Handler(SimpleHTTPRequestHandler):
         except (ValueError, KeyError, TypeError, AttributeError):
             return self._json(400, {"error": 'expected {"on": true} or {"on": false}' if outlet
                                     else 'expected {"position": 0-100}, {"stop": true}, {"press": "up"} or {"declare": 0}' if cover
-                                    else 'expected {"on": true}, {"key": "HOME"} or {"app": "<package>"}'})
+                                    else 'expected {"on": true}, {"key": "HOME"}, {"app": "<package>"} or {"tap": [0.5, 0.5]}'})
         if projector:  # adb, not the broker
             projector_command(projector["id"], **body)
             return self._json(202, {"id": projector["id"], **body})

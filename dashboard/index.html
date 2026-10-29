@@ -156,6 +156,13 @@
     .remote button.ok { border-radius: 50%; }
     .projector button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     .projector .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    /* its screen, live: a click there is a tap on the projector */
+    .projector .screen-btn { height: 30px; padding: 0 12px; border-radius: 99px; cursor: pointer; font: inherit; font-size: 0.8rem; color: var(--text);
+      background: transparent; border: 1px dashed var(--line); margin-left: auto; }
+    .projector .screen-btn[aria-pressed="true"] { border-style: solid; border-color: var(--accent); }
+    .mirror { grid-column: 1 / -1; margin: 0; position: relative; }
+    .mirror img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #000; border-radius: 10px; cursor: crosshair; }
+    .mirror figcaption { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 0.9rem; pointer-events: none; }
     @media (max-width: 640px) { .projector { grid-template-columns: 1fr; } .beamer { height: 70px; } .beamer svg { height: 70px; } }
 
     /* ---------- the chain: Homebridge, broker, RF bridge, the air ---------- */
@@ -326,6 +333,10 @@
           b.addEventListener("click", () => projectorSend(p.id, { app: a.package }));
           apps.append(b);
         }
+        const screenBtn = el("button", "screen-btn", "📺 Screen");
+        screenBtn.setAttribute("aria-pressed", "false");
+        screenBtn.addEventListener("click", () => toggleMirror(k, p.id));
+        apps.append(screenBtn);
         info.append(top, apps);
         const remote = el("div", "remote");
         for (const [label, key, cls] of REMOTE) {
@@ -359,6 +370,34 @@
       sw.setAttribute("aria-label", `${p.name}: ${on ? "on" : "off"}`);
       for (const b of k.querySelectorAll(".apps button")) b.classList.toggle("front", p.on === true && b.dataset.package === p.app);
     }
+
+    // The live screen: an MJPEG stream the hub runs only while someone watches. Hidden, closed or
+    // in a background tab, the <img> lets go of it and the hub stops it a little later.
+    function toggleMirror(k, id, open = !k.querySelector(".mirror")) {
+      k.querySelector(".mirror")?.remove();
+      $(".screen-btn", k).setAttribute("aria-pressed", String(open));
+      if (!open) return;
+      const fig = el("figure", "mirror"), img = el("img"), cap = el("figcaption", "", "connecting…");
+      img.alt = "the projector's screen";
+      img.addEventListener("load", () => cap.remove(), { once: true });
+      img.addEventListener("error", () => { cap.textContent = "no picture: the projector is off or unreachable"; fig.append(cap); });
+      img.addEventListener("click", (e) => {
+        // the picture is letterboxed in the 16:9 box: the tap is relative to the picture itself
+        const r = img.getBoundingClientRect(), w = img.naturalWidth || 16, h = img.naturalHeight || 9;
+        const scale = Math.min(r.width / w, r.height / h), pw = w * scale, ph = h * scale;
+        const x = (e.clientX - r.left - (r.width - pw) / 2) / pw, y = (e.clientY - r.top - (r.height - ph) / 2) / ph;
+        if (x >= 0 && x <= 1 && y >= 0 && y <= 1) projectorSend(id, { tap: [x, y] });
+      });
+      img.src = `/api/projectors/${encodeURIComponent(id)}/screen.mjpg?t=${Date.now()}`;
+      fig.append(img, cap);
+      k.append(fig);
+    }
+    document.addEventListener("visibilitychange", () => {
+      for (const k of document.querySelectorAll(".projector")) {
+        if (document.hidden && k.querySelector(".mirror")) { k.dataset.mirror = "1"; toggleMirror(k, k.dataset.id, false); }
+        else if (!document.hidden && k.dataset.mirror) { delete k.dataset.mirror; toggleMirror(k, k.dataset.id, true); }
+      }
+    });
 
     async function projectorSend(id, body) {
       sendPacket(true);
