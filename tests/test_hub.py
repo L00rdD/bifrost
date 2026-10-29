@@ -682,11 +682,12 @@ class MirrorTest(unittest.TestCase):
         ffmpeg = Path(self.dir.name, "ffmpeg")
         ffmpeg.write_text("#!/bin/sh\nexec cat\n")
         adb.chmod(0o755), ffmpeg.chmod(0o755)
-        self.real = (hub.ADB, hub.FFMPEG, hub.adb, hub.MIRROR_LINGER, hub.MIRROR_START)
+        self.real = (hub.ADB, hub.FFMPEG, hub.adb, hub.MIRROR_LINGER, hub.MIRROR_START, hub.MIRROR_REPEAT, hub.mirrors)
         hub.ADB, hub.FFMPEG, hub.adb = str(adb), str(ffmpeg), FakeAdb()
-        hub.MIRROR_LINGER, hub.MIRROR_START = 1, 3
+        hub.MIRROR_LINGER, hub.MIRROR_START, hub.MIRROR_REPEAT = 1, 3, 0.2
         self.listener = socket.create_server(("127.0.0.1", 0))
         self.mirror = hub.Mirror(hub.PROJECTOR_BY_ID["projector"], self.listener.getsockname()[1])
+        hub.mirrors = {"projector": self.mirror}
         self.clients = []
         threading.Thread(target=self.projector, daemon=True).start()
 
@@ -705,7 +706,7 @@ class MirrorTest(unittest.TestCase):
         self.listener.close()
         for c in self.clients:
             c.close()
-        hub.ADB, hub.FFMPEG, hub.adb, hub.MIRROR_LINGER, hub.MIRROR_START = self.real
+        hub.ADB, hub.FFMPEG, hub.adb, hub.MIRROR_LINGER, hub.MIRROR_START, hub.MIRROR_REPEAT, hub.mirrors = self.real
         self.dir.cleanup()
 
     def test_split_jpegs(self):
@@ -732,6 +733,32 @@ class MirrorTest(unittest.TestCase):
         out = subprocess.run(["ffmpeg", *hub.TO_MJPEG], input=h264, capture_output=True, timeout=30)
         frames, _ = hub.split_jpegs(out.stdout)
         self.assertEqual(len(frames), 15, out.stderr.decode())
+
+    def test_a_still_screen_sends_its_last_picture_again(self):
+        frames = self.mirror.watch()
+        while next(frames) != JPEG_B:
+            pass
+        start = time.monotonic()
+        self.assertEqual(next(frames), JPEG_B)  # nothing new from the projector
+        self.assertLess(time.monotonic() - start, 1)
+        frames.close()
+
+    def test_the_browser_gets_each_picture_with_its_boundary_and_leaving_stops_the_mirror(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), hub.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            c = socket.create_connection(server.server_address, timeout=5)
+            c.sendall(b"GET /api/projectors/projector/screen.mjpg HTTP/1.1\r\nHost: x\r\n\r\n")
+            got = b""
+            while JPEG_B + b"\r\n--frame\r\n" not in got:  # the boundary right after: the browser shows it now
+                got += c.recv(65536)
+            self.assertIn(b"multipart/x-mixed-replace; boundary=frame", got)
+            c.close()
+            time.sleep(2.5)  # a repeat finds the browser gone, then MIRROR_LINGER
+            self.assertFalse(self.mirror.running)
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_no_picture_is_an_error(self):
         self.listener.close()

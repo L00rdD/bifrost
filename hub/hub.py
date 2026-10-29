@@ -97,6 +97,7 @@ MIRROR_LINGER = 10    # s the mirror keeps running once nobody watches: a reload
 TO_MJPEG = ["-loglevel", "error", "-probesize", "32", "-analyzeduration", "0", "-f", "h264", "-i", "pipe:0",
             "-pix_fmt", "yuvj420p", "-f", "image2pipe", "-c:v", "mjpeg", "-q:v", "6", "pipe:1"]
 MIRROR_START = 15     # s for the first picture, else the viewer gets an error
+MIRROR_REPEAT = 1     # s: a still screen sends no picture, the viewer gets the last one again
 REVERSE_PAUSE = 0.5   # s between stop and the other direction
 ECHO_WINDOW = 3       # s: the bridge repeats what it sends on 433/receive
 log = logging.getLogger("hub")
@@ -602,7 +603,8 @@ class Mirror:
         self.running, self.error, self.procs, self.sock, self.said = False, None, [], None, collections.deque(maxlen=5)
 
     def watch(self):
-        """The JPEGs as they come, the latest one first. Ends when the mirror stops."""
+        """The JPEGs as they come, the latest one first, the same one again every MIRROR_REPEAT s while
+        the screen stays still: that is how the server learns a viewer left. Ends when the mirror stops."""
         with self.cond:
             self.viewers += 1
             if not self.running:
@@ -612,11 +614,10 @@ class Mirror:
             seen = 0
             while True:
                 with self.cond:
-                    self.cond.wait_for(lambda: self.seq != seen or not self.running, timeout=MIRROR_START)
-                    if self.seq == seen:
-                        if not self.running or seen == 0:  # stopped, or no first picture in time
-                            raise OSError(self.error or (self.said[-1] if self.said else "the projector sends no picture"))
-                        continue
+                    self.cond.wait_for(lambda: self.seq != seen or not self.running,
+                                       timeout=MIRROR_REPEAT if seen else MIRROR_START)
+                    if not self.running or self.seq == seen == 0:  # stopped, or no first picture in time
+                        raise OSError(self.error or (self.said[-1] if self.said else "the projector sends no picture"))
                     seen, frame = self.seq, self.frame
                 yield frame
         finally:
@@ -908,7 +909,8 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _mirror(self, mirror: Mirror) -> None:
         """MJPEG: one JPEG after the other in a never-ending response, which <img> shows as video.
-        No CORS: another site can show it but not read it."""
+        Each JPEG is followed by the boundary at once: a browser shows a part only once the next
+        boundary came. No CORS: another site can show it but not read it."""
         frames = mirror.watch()
         try:
             first = next(frames)  # an error before any byte goes out still gets its status
@@ -920,8 +922,9 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
         self.end_headers()
         try:
+            self.wfile.write(b"--frame\r\n")
             for frame in itertools.chain([first], frames):
-                self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n%b\r\n"
+                self.wfile.write(b"Content-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n%b\r\n--frame\r\n"
                                  % (len(frame), frame))
                 self.wfile.flush()
         except OSError:  # the viewer left, or the mirror stopped

@@ -379,8 +379,19 @@
       if (!open) return;
       const fig = el("figure", "mirror"), img = el("img"), cap = el("figcaption", "", "connecting…");
       img.alt = "the projector's screen";
-      img.addEventListener("load", () => cap.remove(), { once: true });
-      img.addEventListener("error", () => { cap.textContent = "no picture: the projector is off or unreachable"; fig.append(cap); });
+      // A stream may never fire load: look at the picture itself. All black is a protected app (DRM).
+      const probe = document.createElement("canvas");
+      probe.width = 16; probe.height = 9;
+      const look = setInterval(() => {
+        if (!fig.isConnected) return clearInterval(look);
+        if (!img.naturalWidth) return;
+        const ctx = probe.getContext("2d", { willReadFrequently: true });
+        ctx.drawImage(img, 0, 0, 16, 9);
+        const black = ctx.getImageData(0, 0, 16, 9).data.every((v, i) => i % 4 === 3 || v < 12);
+        if (black) { cap.textContent = "black screen: the app in front hides its picture (Netflix, Prime Video…)"; fig.append(cap); }
+        else cap.remove();
+      }, 1000);
+      img.addEventListener("error", () => { clearInterval(look); cap.textContent = "no picture: the projector is off or unreachable"; fig.append(cap); });
       img.addEventListener("click", (e) => {
         // the picture is letterboxed in the 16:9 box: the tap is relative to the picture itself
         const r = img.getBoundingClientRect(), w = img.naturalWidth || 16, h = img.naturalHeight || 9;
