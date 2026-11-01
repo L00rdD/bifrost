@@ -415,7 +415,8 @@ class ProjectorTest(unittest.TestCase):
         self.assertEqual(self.sock.published, [("bifrost/projector/projector/state", "ON", True),
                                                ("bifrost/projector/projector/app", "com.netflix.ninja", True)])
         p = hub.snapshot()["projectors"][0]
-        self.assertEqual((p["on"], p["app"], p["apps"][0]), (True, "com.netflix.ninja", {"name": "Netflix", "package": "com.netflix.ninja"}))
+        self.assertEqual((p["on"], p["app"], p["apps"][1]), (True, "com.netflix.ninja", {"name": "Netflix", "package": "com.netflix.ninja"}))
+        self.assertEqual(p["apps"][0]["package"], hub.HOME)  # the launcher first, a button on the dashboard
 
     def off(self):
         self.adb.out = "mWakefulness=Asleep"

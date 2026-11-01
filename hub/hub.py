@@ -1036,7 +1036,9 @@ def snapshot() -> dict:
                         "moving": {1: "down", -1: "up"}.get(state["covers"][c["id"]]["dir"]),
                         "target": state["covers"][c["id"]]["target"]} for c in COVERS],
             "projectors": [{"id": p["id"], "name": p["name"], "cover": p.get("cover"),
-                            "apps": [{"name": n, "package": a} for n, a in p.get("apps", {}).items()],
+                            # the launcher first, under its HomeKit name: opening it wakes the projector and sends HOME
+                            "apps": [{"name": p.get("home", "Home"), "package": HOME},
+                                     *({"name": n, "package": a} for n, a in p.get("apps", {}).items())],
                             **{k: v for k, v in state["projectors"][p["id"]].items() if k not in ("known", "closes_at")},
                             "closes_at": (datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
                                           if (t := state["projectors"][p["id"]]["closes_at"]) else None)}
