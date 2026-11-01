@@ -1,0 +1,284 @@
+{
+  "title": "Den Den Mushi de Shanks — boîtier du pont RF",
+  "subtitle": "Base « Den Den Mushi - Ace 01 » (Thingiverse), chapeau de paille, balafres, cape et Gryphon ajoutés dans Blender · Wemos D1 mini, 433 MHz, infrarouge · résine, Anycubic Photon Mono M7",
+  "scad": "shanks.scad",
+  "out": "rendu.html",
+  "stl_dir": "out/stl",
+  "hero": "three",
+  "intro": "<div class=\"summary\"><p>L'escargot d'Ace devenu <b>Shanks</b> : le chapeau d'Ace retiré, le <b>chapeau de paille</b> de Luffy à la place (bord plus étroit à l'arrière pour ne pas entrer dans la coquille), les <b>trois balafres</b> sur l'œil gauche, une <b>cape</b> sur la coquille et le sabre <b>Gryphon</b> sur le flanc gauche, qui recouvre le poignard d'Ace.</p><p>La figurine est <b>vidée</b> (parois de 2,5 mm) et ouverte dessous. L'électronique se monte sur un <b>berceau</b> qui ferme le fond, tenu par 4 aimants. Les <b>pupilles sont deux LED IR de 3 mm</b>, une troisième LED et le récepteur IR regardent par une fenêtre en bas devant, l'USB entre par l'arrière du pied.</p></div>",
+  "views": [
+    {
+      "id": "three",
+      "title": "Vue d'ensemble",
+      "part": "assembly",
+      "camera": "auto:65,0,30",
+      "caption": "Monté, peint à peu près comme prévu : chapeau de paille, cape noire, Gryphon."
+    },
+    {
+      "id": "front",
+      "title": "Face",
+      "part": "assembly",
+      "camera": "auto:85,0,0",
+      "caption": "De face : les pupilles (LED IR), les balafres sur l'œil gauche, la fenêtre IR en bas."
+    },
+    {
+      "id": "left",
+      "title": "Flanc gauche",
+      "part": "assembly",
+      "camera": "auto:75,0,90",
+      "caption": "Flanc gauche : le Gryphon dans son fourreau, le médaillon."
+    },
+    {
+      "id": "right",
+      "title": "Flanc droit",
+      "part": "assembly",
+      "camera": "auto:75,0,270",
+      "caption": "Flanc droit : le cadran rotatif."
+    },
+    {
+      "id": "back",
+      "title": "Arrière",
+      "part": "assembly",
+      "camera": "auto:60,0,180",
+      "caption": "Arrière : la cape sur la coquille, le tunnel USB en bas."
+    },
+    {
+      "id": "exploded",
+      "title": "Éclaté",
+      "part": "exploded",
+      "camera": "auto:62,0,30",
+      "caption": "Éclaté : berceau et composants, corps, cape, sabre."
+    },
+    {
+      "id": "body_section",
+      "title": "Coupe du corps",
+      "part": "body_section",
+      "camera": "auto:75,0,90",
+      "caption": "Coupe dans l'axe : parois de 2,5 mm, tête et coquille creuses, plots à aimant au ras du fond."
+    },
+    {
+      "id": "eye_section",
+      "title": "Coupe des yeux",
+      "part": "eye_section",
+      "camera": "auto:70,0,60",
+      "caption": "Les LED de 3 mm dans les pupilles, poussées de l'intérieur."
+    },
+    {
+      "id": "cradle_top",
+      "title": "Berceau équipé",
+      "part": "step2",
+      "camera": "auto:25,0,0",
+      "caption": "Le berceau : récepteur IR devant, récepteur 433 debout à gauche, émetteur à plat, D1 mini à l'arrière (USB vers la queue)."
+    },
+    {
+      "id": "step1",
+      "title": "Étape 1",
+      "part": "step1",
+      "camera": "auto:70,0,60",
+      "step_only": true,
+      "caption": "Les LED entrent par l'intérieur de la tête."
+    },
+    {
+      "id": "step2",
+      "title": "Étape 2",
+      "part": "step2",
+      "camera": "auto:45,0,330",
+      "step_only": true,
+      "caption": "Chaque composant dans son alvéole."
+    },
+    {
+      "id": "step3",
+      "title": "Étape 3",
+      "part": "step3",
+      "camera": "auto:75,0,90",
+      "step_only": true,
+      "caption": "En coupe : l'antenne de l'émetteur (orange) fait le tour de la coquille, celle du récepteur (bleu) longe la paroi gauche."
+    },
+    {
+      "id": "step4",
+      "title": "Étape 4",
+      "part": "step4",
+      "camera": "auto:62,0,30",
+      "step_only": true,
+      "caption": "La cape se colle sur la coquille, le sabre sur le flanc gauche."
+    },
+    {
+      "id": "step5",
+      "title": "Étape 5",
+      "part": "step5",
+      "camera": "auto:62,0,30",
+      "step_only": true,
+      "caption": "Le berceau remonte sous le corps, 4 aimants de chaque côté."
+    }
+  ],
+  "parts": [
+    {
+      "part": "body",
+      "name": "Corps",
+      "role": "L'escargot et son chapeau, d'une pièce, vidé (parois 2,5 mm), ouvert dessous. Pupilles percées à 3,15 mm, fenêtre IR et trou de LED en bas devant, tunnel USB à l'arrière, 4 plots à aimant.",
+      "views": [
+        "auto:65,0,30",
+        "auto:160,0,30"
+      ],
+      "color": [
+        0.93,
+        0.8,
+        0.62
+      ]
+    },
+    {
+      "part": "cradle",
+      "name": "Berceau",
+      "role": "Le fond : alvéoles des composants (murets coupés par la forme réelle du corps), 4 logements d'aimant, encoche USB, encoche pour le tirer.",
+      "views": [
+        "auto:30,0,30",
+        "auto:150,0,30"
+      ],
+      "color": [
+        0.3,
+        0.55,
+        0.4
+      ]
+    },
+    {
+      "part": "cape",
+      "name": "Cape",
+      "role": "Collée sur la coquille. À peindre en noir.",
+      "views": [
+        "auto:62,0,30",
+        "auto:62,0,140"
+      ],
+      "color": [
+        0.13,
+        0.13,
+        0.15
+      ]
+    },
+    {
+      "part": "sword",
+      "name": "Gryphon",
+      "role": "Collé sur le flanc gauche, par-dessus le poignard d'Ace. Fourreau et poignée noirs, garde et bagues dorées.",
+      "views": [
+        "auto:75,0,90",
+        "auto:75,0,270"
+      ],
+      "color": [
+        0.2,
+        0.18,
+        0.17
+      ]
+    }
+  ],
+  "measure": [
+    [
+      "<code>d1</code>, <code>d1_bot</code>",
+      "D1 mini : l × L × épaisseur, soudures dessous",
+      "25,6 × 34,2 × 1,0 ; 1,6 mm"
+    ],
+    [
+      "<code>rx</code>",
+      "Récepteur 433 MHz (XY-MK-5V), posé sur la tranche",
+      "7 × 30,5 × 14,5 mm"
+    ],
+    [
+      "<code>tx</code>",
+      "Émetteur 433 MHz (FS1000A), à plat",
+      "19,5 × 19,5 × 8 mm"
+    ],
+    [
+      "<code>tsop</code>",
+      "Récepteur IR (TSOP38238 / VS1838B)",
+      "6,0 × 5,6 × 8,0 mm"
+    ],
+    [
+      "<code>LED_D</code> (tech.py)",
+      "LED IR 3 mm : diamètre du corps",
+      "3,15 mm"
+    ],
+    [
+      "<code>USB</code> (tech.py)",
+      "Surmoulage de la fiche micro-USB : le tunnel fait 12,5 × 8,5 mm",
+      "12,5 × 8,5 mm"
+    ]
+  ],
+  "steps": [
+    {
+      "title": "Les yeux",
+      "view": "step1",
+      "html": "<p>Souder deux fils fins sur chaque LED IR de 3 mm (repérer l'anode). Passer chaque LED par le fond, monter dans la tête et la pousser dans sa pupille <b>de l'intérieur</b>, jusqu'à ce que le dôme affleure de 0,5 à 1 mm. Une goutte de colle (ou de colle chaude) derrière.</p>",
+      "check": [
+        "Deux LED en place, dôme affleurant",
+        "Fils repérés et descendus au fond"
+      ]
+    },
+    {
+      "title": "Le berceau",
+      "view": "step2",
+      "html": "<p>Récepteur IR dans la poche avant, face à la fenêtre. Récepteur 433 MHz debout dans sa fente le long de la paroi gauche. Émetteur à plat au milieu. D1 mini à plat à l'arrière, l'USB vers la queue, ses soudures dans le creux de la plaque. Le transistor et les deux résistances du driver IR voyagent sous gaine thermo dans les fils.</p><p>Souder d'un composant à l'autre (voir <a href=\"#cablage\">Câblage</a>), puis les LED des yeux et la troisième LED (poussée dans son trou en bas devant).</p>",
+      "check": [
+        "Composants en place",
+        "Câblage soudé",
+        "LED des yeux et du devant reliées au driver"
+      ]
+    },
+    {
+      "title": "Les antennes",
+      "view": "step3",
+      "html": "<p>Environ 17 cm chacune. <b>Émetteur</b> : vers le haut dans la coquille, puis le long de sa paroi intérieure (scotch kapton). <b>Récepteur</b> : vers l'arrière le long de la paroi gauche, au ras du fond, puis autour de la queue. Les garder loin l'une de l'autre.</p>",
+      "check": [
+        "Antenne de l'émetteur dans la coquille",
+        "Antenne du récepteur le long de la paroi",
+        "Essai radio avant de fermer (make sniff, make send)"
+      ]
+    },
+    {
+      "title": "Cape et sabre",
+      "view": "step4",
+      "html": "<p>Peindre avant de coller (voir <a href=\"#peinture\">Peinture</a>). Coller la cape sur la coquille, son bord avant juste derrière le chapeau, et le Gryphon sur le flanc gauche, par-dessus le poignard d'Ace.</p>",
+      "check": [
+        "Cape collée",
+        "Sabre collé"
+      ]
+    },
+    {
+      "title": "Fermeture",
+      "view": "step5",
+      "html": "<p>Coller 4 aimants 6 × 2 mm dans les plots du corps et 4 dans le berceau, <b>pôles vérifiés</b>. Remonter le berceau, l'USB face au tunnel. Patins dans les empreintes dessous.</p>",
+      "check": [
+        "8 aimants, pôles vérifiés",
+        "Berceau fermé, USB accessible",
+        "Pont en ligne (433/status)"
+      ]
+    }
+  ],
+  "sections": [
+    {
+      "id": "cablage",
+      "title": "Câblage",
+      "html": "<table><tr><th>D1 mini</th><th>Vers</th></tr><tr><td><code>D2</code></td><td>DATA de l'émetteur</td></tr><tr><td><code>D1</code></td><td>DATA du récepteur</td></tr><tr><td><code>D5</code></td><td>base du transistor du driver IR, par 1 kΩ</td></tr><tr><td><code>D6</code></td><td>OUT du récepteur IR</td></tr><tr><td><code>5V</code></td><td>VCC émetteur et récepteur, anode de la chaîne de LED IR, VCC du récepteur IR (3,3 V pour un VS1838B)</td></tr><tr><td><code>G</code></td><td>toutes les masses, émetteur du transistor</td></tr></table><p>Les trois LED IR de 3 mm en série (deux yeux, le devant) avec 10 Ω, du 5 V au collecteur d'un 2N2222. Flasher un D1 mini : <code>make flash FQBN=esp8266:esp8266:d1_mini</code>.</p>"
+    },
+    {
+      "id": "peinture",
+      "title": "Peinture",
+      "html": "<table><tr><th>Où</th><th>Couleur</th></tr><tr><td>Corps, visage</td><td>beige rosé de Den Den Mushi, lèvres un ton plus foncé, dents blanches</td></tr><tr><td>Paupières</td><td>un ton plus soutenu, contour noir fin</td></tr><tr><td>Balafres</td><td>rouge brun dans les entailles, essuyé en surface</td></tr><tr><td>Chapeau</td><td>paille (jaune ocre), <b>bandeau rouge</b></td></tr><tr><td>Coquille</td><td>au choix (rouge sombre ou bordeaux pour le Roux), cadran et médaillon argent</td></tr><tr><td>Cape</td><td>noir, brossage gris foncé sur les plis</td></tr><tr><td>Gryphon</td><td>fourreau et poignée noirs, garde et bagues or</td></tr></table>"
+    },
+    {
+      "id": "retouches",
+      "title": "Retouches manuelles",
+      "html": "<p>Ce que je n'ai pas su faire proprement par script, à reprendre dans Blender ou à la lime :</p><ul class=\"checks\"><li><label><input type=\"checkbox\" data-k=\"r1\"> <b>Arrière du chapeau</b> : quelques petits éclats dans le creux entre la nuque, le bord du chapeau et la coquille (restes du chapeau d'Ace). Poncer, ou dans Blender : sculpt, brosse <i>Smooth</i> sur la zone.</label></li><li><label><input type=\"checkbox\" data-k=\"r2\"> <b>Cape</b> : elle épouse la coquille et fait plutôt « housse ». Pour de vrais plis : Blender, mode Sculpt sur <code>out/cape.stl</code>, brosses <i>Cloth</i> ou <i>Crease</i>, puis Solidify 1,6 mm.</label></li><li><label><input type=\"checkbox\" data-k=\"r3\"> <b>Poignard d'Ace</b> : un bout de son fourreau annelé dépasse sous le Gryphon. Lime ou couteau avant peinture, ou le peindre comme une ombre.</label></li><li><label><input type=\"checkbox\" data-k=\"r4\"> <b>Médaillon</b> : c'est encore le Jolly Roger d'Ace. Le poncer à plat et peindre celui du Roux (crâne, sabres croisés, trois balafres).</label></li><li><label><input type=\"checkbox\" data-k=\"r5\"> <b>Balafres</b> : un peu anguleuses ; adoucir au pinceau.</label></li></ul>"
+    },
+    {
+      "id": "impression",
+      "title": "Impression",
+      "html": "<p>Résine ABS-like, supports « Heavy » comme la tour. <b>Corps</b> : ouverture vers le haut (tête en bas), incliné de 10 à 15° ; il est ouvert dessous, il se vide seul. <b>Cape</b> : face intérieure vers le plateau. <b>Sabre</b> : à plat, incliné. <b>Berceau</b> : à plat, alvéoles en haut. Le corps fait environ 64 × 122 × 106 mm : il tient sur le plateau de la M7.</p><div class=\"warn\">Mesurer les composants avant d'imprimer le corps et le berceau (<a href=\"#mesures\">Avant d'imprimer</a>) : ce sont des cotes nominales.</div>"
+    }
+  ],
+  "hardware": [
+    "Wemos D1 mini, émetteur FS1000A, récepteur XY-MK-5V",
+    "3 LED IR 3 mm, 940 nm ; récepteur IR TSOP38238 ou VS1838B",
+    "Transistor 2N2222, résistances 1 kΩ et 10 Ω, gaine thermo",
+    "8 aimants disque 6 × 2 mm, 4 petits patins",
+    "Fil fin, scotch kapton pour les antennes, colle pour résine",
+    "Peintures : beige rosé, paille, rouge, noir, or, argent"
+  ]
+}
