@@ -551,6 +551,153 @@ class ProjectorTest(unittest.TestCase):
         self.assertIn("input keyevent KEYCODE_WAKEUP", self.adb.commands)
 
 
+class HealthAdb:
+    """Stands for adb on a projector with this much memory, up for that long, the vital process at that pid."""
+
+    def __init__(self):
+        self.memory, self.uptime, self.vital, self.calls = 800, 50000, "2112", []
+
+    def __call__(self, projector, *args):
+        cmd = " ".join(args)
+        self.calls.append(cmd)
+        if "MemAvailable" in cmd:
+            return f"MemAvailable:     {self.memory * 1024} kB\n{self.uptime}.12 98765.43\nvital={self.vital}\n"
+        if "boot_completed" in cmd:
+            return "1\n"
+        return ""
+
+    def actions(self):
+        return [c for c in self.calls if "MemAvailable" not in c and "boot_completed" not in c]
+
+
+class HealthTest(unittest.TestCase):
+    NIGHT = hub.datetime(2026, 11, 2, 4, 40)
+    DAY = hub.datetime(2026, 11, 2, 15, 0)
+
+    def setUp(self):
+        reset()
+        with hub.lock:
+            hub.state["projectors"]["projector"].update(on=True, known=True, app=hub.HOME, memory=None, vital_deaths=0,
+                                                        due=None, restarting=False, restarted_at=None, restart_reason=None)
+        hub.vitals["projector"], hub.nights["projector"] = None, None
+        hub.last_restart["projector"] = float("-inf")
+        self.adb, self.real = HealthAdb(), (hub.adb, hub.reconnect, hub.RESTART_SETTLE, hub.WAKE_RETRY)
+        hub.adb, hub.reconnect, hub.RESTART_SETTLE, hub.WAKE_RETRY = self.adb, lambda projector: None, 0, 0.01
+
+    def tearDown(self):
+        hub.adb, hub.reconnect, hub.RESTART_SETTLE, hub.WAKE_RETRY = self.real
+
+    def check(self, when=DAY):
+        hub.checkup("projector", when)
+
+    def watching(self, app="com.netflix.ninja"):
+        with hub.lock:
+            hub.state["projectors"]["projector"]["app"] = app
+
+    def test_all_well_does_nothing_but_keep_the_memory(self):
+        self.check()
+        self.check()
+        self.assertEqual(self.adb.actions(), [])
+        p = hub.snapshot()["projectors"][0]
+        self.assertEqual((p["memory"], p["vital_deaths"], p["due"]), (800, 0, None))
+
+    def test_short_of_memory_kills_the_background(self):
+        self.adb.memory = 150
+        self.check()
+        self.assertEqual(self.adb.actions(), ["shell am kill-all"])
+
+    def test_vital_killed_while_watching_cleans_then_restarts_once_nobody_watches(self):
+        self.watching()
+        self.check()
+        self.adb.vital = "4382"  # killed, started again
+        self.check()
+        self.assertEqual(self.adb.actions(), ["shell am kill-all"])
+        self.assertEqual(hub.snapshot()["projectors"][0]["vital_deaths"], 1)
+        self.check()
+        self.assertEqual(self.adb.actions(), ["shell am kill-all"])  # still watching: no restart
+        self.watching(hub.HOME)
+        self.check()
+        self.assertEqual(self.adb.actions(), ["shell am kill-all", "reboot"])
+        p = hub.snapshot()["projectors"][0]
+        self.assertEqual((p["restarting"], p["due"], p["restart_reason"]), (False, None, "com.jmgo.hippo was killed"))
+
+    def test_vital_gone_counts_as_killed(self):
+        self.check()
+        self.adb.vital = ""
+        self.check()
+        self.assertEqual(self.adb.actions(), ["reboot"])  # on the launcher: nobody watches
+
+    def test_a_restart_back_to_sleep_when_it_was_off(self):
+        with hub.lock:
+            hub.state["projectors"]["projector"].update(on=False, known=False, app=None)
+        self.check()
+        self.adb.vital = "4382"
+        self.check()
+        self.assertEqual(self.adb.actions(), ["reboot", "shell input keyevent KEYCODE_SLEEP"])
+
+    def test_no_second_restart_within_the_gap(self):
+        self.check()
+        self.adb.vital = "4382"
+        self.check()
+        self.adb.vital = "5000"
+        self.check()  # the restarted one: no death
+        self.adb.vital = "6000"
+        self.check()
+        self.assertEqual(self.adb.actions(), ["reboot", "shell am kill-all"])
+        self.assertIsNotNone(hub.snapshot()["projectors"][0]["due"])  # kept for later
+
+    def test_nightly_restart_once_nobody_watches_once_a_night(self):
+        self.check(hub.datetime(2026, 11, 2, 4, 20))
+        self.assertEqual(self.adb.actions(), [])  # before reboot_at
+        self.watching()
+        self.check(self.NIGHT)
+        self.assertEqual(self.adb.actions(), [])  # someone watches at 4:40
+        self.watching(hub.SCREENSAVER)
+        self.check(self.NIGHT)
+        self.assertEqual(self.adb.actions(), ["reboot"])
+        hub.last_restart["projector"] = float("-inf")
+        self.check(self.NIGHT)
+        self.assertEqual(self.adb.actions(), ["reboot"])  # once a night
+        self.check(hub.datetime(2026, 11, 3, 8, 0))
+        self.assertEqual(self.adb.actions(), ["reboot"])  # past the window
+
+    def test_no_nightly_restart_just_after_one(self):
+        self.adb.uptime = 600
+        self.check(self.NIGHT)
+        self.assertEqual(self.adb.actions(), [])
+
+    def test_unreachable_or_restarting_is_left_alone(self):
+        with hub.lock:
+            hub.state["projectors"]["projector"]["on"] = None
+        self.check(self.NIGHT)
+        with hub.lock:
+            hub.state["projectors"]["projector"].update(on=True, restarting=True)
+        self.check(self.NIGHT)
+        self.assertEqual(self.adb.calls, [])
+
+    def test_focus_and_restart_on_demand(self):
+        hub.projector_command("projector", focus=True)
+        hub.projector_command("projector", restart=True)
+        time.sleep(0.3)
+        self.assertIn("shell am broadcast -a com.jmgo.tof.autofocus", self.adb.actions())
+        self.assertIn("reboot", self.adb.actions())
+
+    def test_focus_again_once_the_screen_came_down(self):
+        real = hub.projector_command
+        orders = []
+        hub.projector_command = lambda pid, **kw: orders.append(kw)
+        cover = hub.COVER_BY_ID["screen"]
+        saved = cover.get("open_time")
+        cover["open_time"] = 0
+        try:
+            hub._focus_later("projector")
+            time.sleep(2.3)
+        finally:
+            hub.projector_command = real
+            cover["open_time"] = saved
+        self.assertEqual(orders, [{"focus": True}])
+
+
 class WebTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

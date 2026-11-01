@@ -37,4 +37,7 @@ adb = "192.168.1.19:5555"
 cover = "screen"            # optional: down when the projector turns on, up once it has been off
 close_after = 300           # s: that long off before the screen goes up (300 if omitted)
 home = "Home"               # the HomeKit input of the launcher ("Home" if omitted)
+vital = "com.jmgo.hippo"    # optional: drives the light; killed for memory, the picture is gone until a restart
+focus = "com.jmgo.tof.autofocus"  # optional: the broadcast that focuses the lens, sent once the screen is down
+reboot_at = "04:30"         # optional: a restart every night from then, once nobody watches
 apps = { Netflix = "com.netflix.ninja", YouTube = "com.google.android.youtube.tv" }   # HomeKit inputs

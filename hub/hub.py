@@ -17,8 +17,9 @@ status of the whole thing for the d-mediaserver home page.
 
   bifrost/projector/<id>/set  ON / OFF, /key  DPAD_UP..., /app/set  <package> or home -> over ADB
   bifrost/projector/<id>/state  ON / OFF, /app  <package>, home or screensaver  <- retained, polled every 5 s
-  POST :8582/api/projectors/<id>       -> {"on": true}, {"key": "HOME"}, {"app": "<package>"} or
-                                          {"tap": [x, y]} (0-1 across the screen, from the top left)
+  POST :8582/api/projectors/<id>       -> {"on": true}, {"key": "HOME"}, {"app": "<package>"},
+                                          {"tap": [x, y]} (0-1 across the screen, from the top left),
+                                          {"focus": true} (the lens focuses again) or {"restart": true}
   GET :8582/api/projectors/<id>/screen.mjpg  -> what the projector shows, as Vysor would (MJPEG)
 
 The codes live in outlets.toml only. 433/receive carries both the remote's presses and
@@ -37,6 +38,12 @@ Asleep for long, its Wi-Fi lets adb through only now and then: an ON or OFF trie
 3 minutes, dropping the dead connection adb keeps between two tries.
 When it turns on, from anywhere, its screen comes down; when it has been off for 5 minutes,
 the screen goes up (turned back on before that, the screen stays).
+It focuses as it wakes, before the screen is down: once the screen had the time to come down,
+the hub has it focus again (focus = the broadcast action that does it).
+
+Its health is checked every minute (memory, the vital process that drives the light): see
+checkup. A restart (nightly at reboot_at, or once the vital process was killed) happens only
+while nobody watches, and puts it back to sleep if it was off.
 
 The screen comes from the scrcpy server, pushed to the projector and started only while someone
 watches: it sends H.264, ffmpeg turns it into JPEGs that any browser shows, iPhone included, with
@@ -82,6 +89,13 @@ PROJECTOR_POLL = 5  # s between two looks at the projector
 WAKE_FOR = 180      # s an ON or OFF keeps trying: in deep sleep the projector's Wi-Fi answers adb only now and then
 WAKE_RETRY = 2      # s between two tries
 CLOSE_AFTER = 300   # s off before the screen goes up: a change of mind does not roll it up and down
+CHECKUP_EVERY = 60  # s between two checkups of the projector's health
+MEMORY_FLOOR = 200  # MB available under which the apps left in the background are killed
+RESTART_GAP = 3600  # s: no second restart for health within that long, whatever happens
+RESTART_FOR = 300   # s a restart may take before the projector answers again
+RESTART_SETTLE = 20  # s after adb reboot before asking whether it is back: before, the old one may still answer
+NIGHT_WINDOW = 3 * 3600  # s after reboot_at the nightly restart may still happen, once nobody watches
+MIN_UPTIME = 3 * 3600    # s: a projector up for less needs no nightly restart
 # adb shell goes through a shell on the projector: only these ever reach it from a payload
 KEY_RE = re.compile(r"[A-Z][A-Z0-9_]{0,39}")
 PACKAGE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+")
@@ -108,8 +122,21 @@ state = {"broker": False, "bridge_seen": None, "last_code": None, "outlets": {},
                     for c in COVERS},
          # on: True / False / None (unreachable), known: the last on that was not None
          # closes_at: when the screen goes up, the projector being off since close_after
-         "projectors": {p["id"]: {"on": None, "known": None, "app": None, "error": None, "at": None, "closes_at": None}
+         # memory: MB available at the last checkup, vital_deaths: times the vital process was killed,
+         # due: why it restarts as soon as nobody watches, restarting: adb reboot sent, not back yet
+         "projectors": {p["id"]: {"on": None, "known": None, "app": None, "error": None, "at": None, "closes_at": None,
+                                  "memory": None, "vital_deaths": 0, "due": None, "restarting": False,
+                                  "restarted_at": None, "restart_reason": None}
                         for p in PROJECTORS}}
+vitals: dict[str, str | None] = {p["id"]: None for p in PROJECTORS}  # its pid at the last checkup
+nights: dict[str, object] = {p["id"]: None for p in PROJECTORS}       # the date of the last nightly restart
+last_restart: dict[str, float] = {p["id"]: float("-inf") for p in PROJECTORS}  # monotonic time of the last one
+for _p in PROJECTORS:  # these end up in shell commands
+    for _k in ("vital", "focus"):
+        if _k in _p and not PACKAGE_RE.fullmatch(_p[_k]):
+            raise SystemExit(f"projector {_p['id']}: {_k} = {_p[_k]!r} is no package or action name")
+    if "reboot_at" in _p and not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", _p["reboot_at"]):
+        raise SystemExit(f"projector {_p['id']}: reboot_at = {_p['reboot_at']!r}, expected HH:MM")
 pokes = {p["id"]: threading.Event() for p in PROJECTORS}      # look at the projector now
 orders = {p["id"]: 0 for p in PROJECTORS}                      # the last order's number: a newer one ends the tries of an older
 adb_locks = {p["id"]: threading.Lock() for p in PROJECTORS}   # one adb command at a time
@@ -450,6 +477,7 @@ def projector_seen(pid: str, on: bool | None, app: str | None, error: str | None
         if on:
             _cancel_close(pid)
             move(cfg["cover"], 100)
+            _focus_later(pid)
         else:
             _close_later(pid)
     elif before is None and not on:  # the hub (re)started with the projector off: a close may have been lost
@@ -493,6 +521,24 @@ def _close_later(pid: str) -> None:
     timer.start()
 
 
+def _focus_later(pid: str) -> None:
+    """The projector focuses on its own as it wakes, before the screen is down: it measures the
+    wall, or the screen on its way. Once the screen had the time to come down, focus again."""
+    cfg = PROJECTOR_BY_ID[pid]
+    if "focus" not in cfg:
+        return
+
+    def focus():
+        with lock:
+            if state["projectors"][pid]["known"] is not True:
+                return
+        projector_command(pid, focus=True)
+
+    timer = threading.Timer(COVER_BY_ID[cfg["cover"]].get("open_time", 0) + 2, focus)
+    timer.daemon = True
+    timer.start()
+
+
 def reconnect(projector: dict) -> None:
     """Drops the connection and opens a new one. Asleep for long, the projector leaves adb a dead
     connection ("offline", or no answer) that a plain connect keeps ("already connected")."""
@@ -506,15 +552,125 @@ def reconnect(projector: dict) -> None:
 def watch(pid: str) -> None:
     projector = PROJECTOR_BY_ID[pid]
     while True:
-        try:
-            with adb_locks[pid]:
-                on, app = probe(projector)
-            projector_seen(pid, on, app, None)
+        with lock:
+            restarting = state["projectors"][pid]["restarting"]
+        try:  # a restart is no turning off and on: the screen stays, HomeKit sees nothing
+            if not restarting:
+                with adb_locks[pid]:
+                    on, app = probe(projector)
+                projector_seen(pid, on, app, None)
         except OSError as e:
             projector_seen(pid, None, None, str(e))
             reconnect(projector)
         pokes[pid].wait(PROJECTOR_POLL)
         pokes[pid].clear()
+
+
+def checkup(pid: str, when: datetime) -> None:
+    """Keeps the projector in health. With 2 GB for Google TV and the apps it starts by itself, it
+    runs short of memory after a few days; Android then kills the vital process (the one that drives
+    the light and the lens) and the picture is gone for good, the projector still on: only a restart
+    brings it back. So, every CHECKUP_EVERY s:
+      - short of memory: kill the apps left in the background (am kill-all spares what is shown);
+      - the vital process killed since the last checkup: the same, and a restart as soon as nobody
+        watches (off, the launcher or the screensaver in front);
+      - from reboot_at and for NIGHT_WINDOW, once a day: a restart, nobody watching.
+    No two restarts for health within RESTART_GAP s, whatever happens."""
+    cfg = PROJECTOR_BY_ID[pid]
+    with lock:
+        p = state["projectors"][pid]
+        if p["restarting"] or p["on"] is None:  # unreachable: the watch deals with it
+            return
+        idle = not p["on"] or p["app"] in (HOME, SCREENSAVER)
+    vital = cfg.get("vital")
+    with adb_locks[pid]:
+        out = adb(cfg, "shell", "grep MemAvailable /proc/meminfo; cat /proc/uptime"
+                                + (f"; echo vital=$(pidof {vital})" if vital else ""))
+    memory = re.search(r"MemAvailable:\s+(\d+)", out)
+    uptime = re.search(r"^(\d+)", out, re.M)
+    if not memory or not uptime:
+        raise OSError("adb: no memory nor uptime from the projector")
+    memory, uptime = int(memory.group(1)) // 1024, int(uptime.group(1))
+    pids = re.search(r"^vital=(.*)$", out, re.M)
+    pids = pids and pids.group(1).strip()
+    clean = False
+    with lock:
+        p["memory"] = memory
+        if vital and vitals[pid] and pids != vitals[pid]:
+            p["vital_deaths"] += 1
+            p["due"] = p["due"] or f"{vital} was killed"
+            log.warning("%s: %s was killed (pid %s, now %s), %d MB available", pid, vital, vitals[pid], pids or "none", memory)
+            clean = True
+        if vital:
+            vitals[pid] = pids or None
+        if at := cfg.get("reboot_at"):
+            start = when.replace(hour=int(at[:2]), minute=int(at[3:]), second=0, microsecond=0)
+            if (0 <= (when - start).total_seconds() < NIGHT_WINDOW and nights[pid] != when.date()
+                    and uptime >= MIN_UPTIME and idle):
+                nights[pid] = when.date()
+                p["due"] = p["due"] or "nightly"
+        due = p["due"] if idle and time.monotonic() - last_restart[pid] >= RESTART_GAP else None
+    if memory < MEMORY_FLOOR:
+        log.warning("%s: %d MB available", pid, memory)
+        clean = True
+    if due:
+        reboot(pid, due)
+    elif clean:
+        with adb_locks[pid]:
+            adb(cfg, "shell", "am kill-all")
+        log.info("%s: the apps in the background killed", pid)
+
+
+def guard(pid: str) -> None:
+    while True:
+        time.sleep(CHECKUP_EVERY)
+        try:
+            checkup(pid, datetime.now())
+        except OSError as e:
+            log.warning("%s: checkup: %s", pid, e)
+
+
+def reboot(pid: str, reason: str) -> None:
+    """adb reboot, then wait until it is back and put it to sleep again if it was off: it wakes up
+    from a restart. The watch stays out of it meanwhile."""
+    cfg = PROJECTOR_BY_ID[pid]
+    with lock:
+        p = state["projectors"][pid]
+        if p["restarting"]:
+            return
+        asleep = p["known"] is False
+        p.update(restarting=True, due=None)
+        last_restart[pid] = time.monotonic()
+    log.warning("%s: restarting (%s)", pid, reason)
+    try:
+        with adb_locks[pid]:
+            try:
+                adb(cfg, "reboot")
+            except OSError as e:  # the connection may drop before adb hears back
+                log.info("%s: adb reboot: %s", pid, e)
+        time.sleep(RESTART_SETTLE)
+        deadline = time.monotonic() + RESTART_FOR
+        while True:
+            try:
+                with adb_locks[pid]:
+                    if adb(cfg, "shell", "getprop sys.boot_completed").strip() == "1":
+                        break
+            except OSError:
+                reconnect(cfg)
+            if time.monotonic() >= deadline:
+                raise OSError(f"not back after {RESTART_FOR} s")
+            time.sleep(WAKE_RETRY)
+        if asleep:
+            with adb_locks[pid]:
+                adb(cfg, "shell", "input keyevent KEYCODE_SLEEP")
+        log.info("%s: back from the restart", pid)
+    except OSError as e:
+        log.warning("%s: restart: %s", pid, e)
+    finally:
+        with lock:
+            vitals[pid] = None  # a new one, with a new pid
+            p.update(restarting=False, restarted_at=now(), restart_reason=reason)
+        pokes[pid].set()
 
 
 def screen_size(projector: dict) -> tuple[int, int]:
@@ -529,8 +685,9 @@ def screen_size(projector: dict) -> tuple[int, int]:
 
 
 def projector_command(pid: str, on: bool | None = None, key: str | None = None, app: str | None = None,
-                      tap: tuple[float, float] | None = None) -> None:
+                      tap: tuple[float, float] | None = None, focus: bool = False, restart: bool = False) -> None:
     """Runs one order in the background (adb takes a second or two), then looks again.
+    focus: the lens focuses again, as after the screen came down; restart: adb reboot, back asleep if it was.
     key and app must have passed KEY_RE and PACKAGE_RE (or be HOME): they end up in a shell command."""
     projector = PROJECTOR_BY_ID[pid]
 
@@ -560,10 +717,16 @@ def projector_command(pid: str, on: bool | None = None, key: str | None = None, 
                     raise OSError("a newer order came") from e
 
     def run():
+        if restart:
+            return reboot(pid, "asked")
         try:
             if on is not None or app:
                 power()
             with adb_locks[pid]:
+                if focus:
+                    if "focus" not in projector:
+                        raise OSError("no focus action for this projector")
+                    adb(projector, "shell", f"am broadcast -a {projector['focus']}")
                 if tap:
                     w, h = screen_size(projector)
                     adb(projector, "shell", f"input tap {round(tap[0] * (w - 1))} {round(tap[1] * (h - 1))}")
@@ -572,7 +735,7 @@ def projector_command(pid: str, on: bool | None = None, key: str | None = None, 
                 elif app:
                     adb(projector, "shell", f"monkey -p {app} -c android.intent.category.LEANBACK_LAUNCHER 1")
             if not tap:  # a tap is no news
-                log.info("%s -> %s", pid, "ON" if on else "OFF" if on is False else key or app)
+                log.info("%s -> %s", pid, "ON" if on else "OFF" if on is False else "focus" if focus else key or app)
         except OSError as e:
             log.warning("%s: %s", pid, e)
         pokes[pid].set()
@@ -950,6 +1113,7 @@ class Handler(SimpleHTTPRequestHandler):
             if projector:
                 if len(body) != 1 or not (isinstance(body.get("on"), bool)
                                           or isinstance(body.get("key"), str) and KEY_RE.fullmatch(body["key"])
+                                          or body.get("focus") is True or body.get("restart") is True
                                           or body.get("app") == HOME
                                           or isinstance(body.get("app"), str) and PACKAGE_RE.fullmatch(body["app"])
                                           or isinstance(body.get("tap"), list) and len(body["tap"]) == 2
@@ -970,7 +1134,8 @@ class Handler(SimpleHTTPRequestHandler):
         except (ValueError, KeyError, TypeError, AttributeError):
             return self._json(400, {"error": 'expected {"on": true} or {"on": false}' if outlet
                                     else 'expected {"position": 0-100}, {"stop": true}, {"press": "up"} or {"declare": 0}' if cover
-                                    else 'expected {"on": true}, {"key": "HOME"}, {"app": "<package>"} or {"tap": [0.5, 0.5]}'})
+                                    else 'expected {"on": true}, {"key": "HOME"}, {"app": "<package>"}, {"tap": [0.5, 0.5]}, '
+                                         '{"focus": true} or {"restart": true}'})
         if projector:  # adb, not the broker
             projector_command(projector["id"], **body)
             return self._json(202, {"id": projector["id"], **body})
@@ -1008,4 +1173,5 @@ if __name__ == "__main__":
     threading.Thread(target=listen, daemon=True, name="mqtt").start()
     for p in PROJECTORS:
         threading.Thread(target=watch, args=(p["id"],), daemon=True, name=f"watch-{p['id']}").start()
+        threading.Thread(target=guard, args=(p["id"],), daemon=True, name=f"guard-{p['id']}").start()
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
