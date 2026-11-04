@@ -122,15 +122,24 @@ function paintProjector(p) {
   k.classList.toggle("on", on === true);
   k.classList.toggle("away", p.on === null);
   $("h2", k).textContent = p.name;
-  const app = p.apps.find((a) => a.package === p.app) || (p.app === "screensaver" || p.app === "home" ? { name: p.app } : null);
-  $(".when", k).textContent = want !== undefined ? (want ? "turning on…" : "turning off…")
-    : p.on === null ? `unreachable${p.error ? " · " + p.error : ""}`
-    : p.on ? `On${app ? " · " + app.name : p.app ? " · " + p.app : ""}${p.cover ? " · the screen follows" : ""}`
-    : p.closes_at ? `Off · the screen goes up at ${new Date(p.closes_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Off";
+  $(".when", k).textContent = want !== undefined ? (want ? "turning on…" : "turning off…") : projectorState(p);
   const sw = $(".switch", k);
   sw.setAttribute("aria-checked", on === null ? "mixed" : String(on));
   sw.setAttribute("aria-label", `${p.name}: ${on ? "on" : "off"}`);
   for (const b of k.querySelectorAll(".apps button")) b.classList.toggle("front", p.on === true && b.dataset.package === p.app);
+}
+
+// What the projector does, as the hub last saw it
+function projectorState(p) {
+  if (p.on === null) return `unreachable${p.error ? " · " + p.error : ""}`;
+  if (p.on) return `On${projectorApp(p)}${p.cover ? " · the screen follows" : ""}`;
+  return p.closes_at ? `Off · the screen goes up at ${new Date(p.closes_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Off";
+}
+
+// " · " and the app in front, under its name when the dashboard knows it
+function projectorApp(p) {
+  const app = p.apps.find((a) => a.package === p.app) || (p.app === "screensaver" || p.app === "home" ? { name: p.app } : null);
+  return app ? " · " + app.name : p.app ? " · " + p.app : "";
 }
 
 // The live screen: an MJPEG stream the hub runs only while someone watches. Hidden, closed or
@@ -279,13 +288,22 @@ function sendPacket(outward) {
 function paint(s) {
   status = s;
   $("#updated").textContent = "433 MHz ⇄ MQTT ⇄ HomeKit · updated " + new Date(s.updated_at).toLocaleTimeString();
+  paintChain(s);
+  paintOutlets(s.outlets);
+  paintCinema(s.covers || [], s.projectors || []);
+  paintLastCode(s.last_code);
+}
+
+function paintChain(s) {
   const ups = { homebridge: s.homebridge, broker: s.broker, bridge: s.bridge.online, air: s.bridge.online };
   for (const [n, up] of Object.entries(ups)) $(`[data-n="${n}"]`).classList.toggle("up", up);
   const links = [s.homebridge && s.broker, s.broker && s.bridge.online, s.bridge.online];
   links.forEach((up, i) => $(`[data-l="${i}"]`).classList.toggle("up", up));
+}
 
-  if (!s.outlets.length) $("#outlets").replaceChildren(el("p", "empty", "No outlet yet: add one to outlets.toml."));
-  for (const o of s.outlets) {
+function paintOutlets(outlets) {
+  if (!outlets.length) $("#outlets").replaceChildren(el("p", "empty", "No outlet yet: add one to outlets.toml."));
+  for (const o of outlets) {
     const p = pending.get(o.id);
     if (p && o.on === p.want && o.at && new Date(o.at) >= p.since - 1000) {
       clearTimeout(p.timer);
@@ -294,15 +312,18 @@ function paint(s) {
     }
     paintOutlet(o);
   }
+}
 
-  const covers = s.covers || [], projectors = s.projectors || [];
+function paintCinema(covers, projectors) {
   $("#covers").hidden = !covers.length;
   $("#projectors").hidden = !projectors.length;
   $("#cinema-label").hidden = !covers.length && !projectors.length;
   projectors.forEach(paintProjector);
   covers.forEach(paintCover);
+}
 
-  const last = $("#last"), lc = s.last_code;
+function paintLastCode(lc) {
+  const last = $("#last");
   const key = lc ? lc.code + lc.at : null;
   if (lc) last.replaceChildren("last code ", el("b", "", lc.code), ` ${lc.via === "sent" ? "sent" : "heard from a remote"} · ${ago(lc.at)}`);
   if (key && lastCodeKey !== null && key !== lastCodeKey) {
