@@ -338,6 +338,132 @@ class CoverTest(unittest.TestCase):
         self.assertEqual(hub.snapshot()["last_code"]["code"], "5553")
         self.assertEqual(hub.snapshot()["last_code"]["via"], "sent")
 
+    def run_now(self, target, press=True):
+        """_run in this thread, its move already cancelled: every wait ends at once."""
+        run = threading.Event()
+        run.set()
+        with hub.lock:
+            hub.state["covers"]["screen"]["run"] = run
+        hub._run("screen", target, press, run)
+        with hub.lock:
+            return hub.state["covers"]["screen"]["run"]
+
+    def test_remote_down_from_unknown_stays_unknown(self):
+        hub.on_message(self.sock, "433/receive", "5553")
+        settle()
+        self.assertEqual((self.sock.published, screen()["position"]), ([], None))
+
+    def test_a_cancelled_move_from_unknown_stops_on_its_way_up(self):
+        self.assertIsNone(self.run_now(100))
+        self.assertEqual((self.sent(), self.published("state")), (["5551 188"], ["DECREASING"]))
+        self.assertEqual(self.published("target"), ["100"])
+
+    def test_a_cancelled_reverse_stops_at_the_pause(self):
+        with hub.lock:
+            hub.state["covers"]["screen"].update(pos=50.0, dir=1, since=time.time())
+        self.run_now(0)
+        self.assertEqual((self.sent(), self.published("state")), (["5552 188"], ["STOPPED"]))
+
+    def test_a_cancelled_move_does_not_send_its_stop(self):
+        self.at(0)
+        self.run_now(100)
+        self.assertEqual((self.sent(), self.published("state")), (["5553 188"], ["INCREASING"]))
+        self.run_now(0, press=False)
+        self.assertEqual(self.sent(), ["5553 188"])
+
+    def test_already_there_only_publishes(self):
+        self.at(40)
+        self.run_now(40)
+        self.assertEqual((self.sent(), self.published("target"), self.published("state")), ([], ["40"], ["STOPPED"]))
+
+    def test_broker_gone_mid_move_means_unknown(self):
+        self.at(0)
+        hub.conn = None
+        self.run_now(100)
+        self.assertEqual((screen()["position"], screen()["moving"]), (None, None))
+
+    def test_retained_while_moving_is_ignored(self):
+        self.at(20)
+        with hub.lock:
+            hub.state["covers"]["screen"]["dir"] = 1
+        hub.on_message(self.sock, "bifrost/cover/screen/state", "INCREASING", retained=True)
+        with hub.lock:
+            c = hub.state["covers"]["screen"]
+            self.assertEqual((c["pos"], c.get("lost")), (20.0, None))
+
+    def test_retained_position_above_100_or_already_known(self):
+        hub.on_message(self.sock, "bifrost/cover/screen/position", "250", retained=True)
+        self.assertEqual(screen()["position"], 100)
+        hub.on_message(self.sock, "bifrost/cover/screen/position", "30", retained=True)
+        self.assertEqual(screen()["position"], 100)  # known already
+        hub.on_message(self.sock, "bifrost/cover/screen/target", "30", retained=True)
+        hub.on_message(self.sock, "bifrost/cover/screen/state", "STOPPED", retained=True)
+        self.assertEqual(screen()["position"], 100)
+
+    def test_set_open_close_stop_and_numbers(self):
+        moves, real = [], hub.move
+        hub.move = lambda cid, target, press=True: moves.append((cid, target))
+        try:
+            for value in ("open", "CLOSE", " 35 ", "Stop", "0", "100"):
+                hub.on_message(self.sock, "bifrost/cover/screen/set", value)
+        finally:
+            hub.move = real
+        self.assertEqual(moves, [("screen", 100), ("screen", 0), ("screen", 35), ("screen", None), ("screen", 0),
+                                 ("screen", 100)])
+
+
+class MessageMoreTest(unittest.TestCase):
+    def setUp(self):
+        reset()
+        self.sock = FakeSock()
+
+    def test_outlet_state_of_an_unknown_outlet_or_value_is_ignored(self):
+        hub.on_message(self.sock, "bifrost/outlet/nope/state", "ON")
+        hub.on_message(self.sock, "bifrost/outlet/fan/state", "maybe")
+        hub.on_message(self.sock, "bifrost/outlet/fan/other", "ON")
+        self.assertEqual(hub.snapshot()["outlets"][1]["on"], None)
+        self.assertEqual(self.sock.published, [])
+
+    def test_outlet_state_keeps_when_it_was_seen(self):
+        hub.on_message(self.sock, "433/receive", "3333")
+        at = hub.snapshot()["outlets"][1]["at"]
+        hub.on_message(self.sock, "bifrost/outlet/fan/state", "OFF")
+        self.assertEqual((hub.snapshot()["outlets"][1]["on"], hub.snapshot()["outlets"][1]["at"]), (False, at))
+
+    def test_other_topics_change_nothing(self):
+        for topic in ("433/info", "433/receive/raw", "bifrost/outlet/fan", "bifrost/cover/screen", "other/topic"):
+            hub.on_message(self.sock, topic, "1111")
+        s = hub.snapshot()
+        self.assertEqual((s["last_code"], s["bridge"]["online"], s["outlets"][0]["on"]), (None, False, None))
+        self.assertEqual(self.sock.published, [])
+
+    def test_last_code_from_a_send_and_a_remote(self):
+        hub.on_message(self.sock, "433/send", "1111 350")
+        self.assertEqual({k: v for k, v in hub.snapshot()["last_code"].items() if k != "at"}, {"code": "1111", "via": "sent"})
+        hub.on_message(self.sock, "433/receive", "4444")
+        self.assertEqual({k: v for k, v in hub.snapshot()["last_code"].items() if k != "at"}, {"code": "4444", "via": "remote"})
+        hub.on_message(self.sock, "433/receive", "4444")  # pressed again: the remote, not an echo
+        self.assertEqual(hub.snapshot()["last_code"]["via"], "remote")
+
+    def test_an_old_send_is_no_echo(self):
+        hub.on_message(self.sock, "433/send", "1111")
+        with hub.lock:
+            hub.state["last_code"]["ts"] -= hub.ECHO_WINDOW
+        hub.on_message(self.sock, "433/receive", "1111")
+        self.assertEqual(hub.snapshot()["last_code"]["via"], "remote")
+
+    def test_projector_topics_go_to_the_projector_unless_retained(self):
+        calls, real = [], hub.on_projector
+        hub.on_projector = lambda topic, payload: calls.append((topic, payload))
+        try:
+            hub.on_message(self.sock, "bifrost/projector/projector/set", "ON")
+            hub.on_message(self.sock, "bifrost/projector/projector/app/set", "home")
+            hub.on_message(self.sock, "bifrost/projector/projector/key", "HOME", retained=True)
+            hub.on_message(self.sock, "bifrost/projector/projector", "ON")
+        finally:
+            hub.on_projector = real
+        self.assertEqual(calls, [("bifrost/projector/projector/set", "ON"), ("bifrost/projector/projector/app/set", "home")])
+
 
 AWAKE = """  mWakefulness=Awake
       topResumedActivity=ActivityRecord{67da29d u0 com.netflix.ninja/.MainActivity t4231}
@@ -377,13 +503,16 @@ class ProjectorTest(unittest.TestCase):
         self.adb, self.real_adb, self.real_move = FakeAdb(), hub.adb, hub.move
         self.moves = []
         hub.adb, hub.move = self.adb, lambda cid, target, press=True: self.moves.append((cid, target))
-        self.reconnects, self.real = 0, (hub.reconnect, hub.WAKE_FOR, hub.WAKE_RETRY)
+        self.reconnects, self.real = 0, (hub.reconnect, hub.WAKE_FOR, hub.WAKE_RETRY, hub._focus_later)
         hub.reconnect = lambda projector: setattr(self, "reconnects", self.reconnects + 1)
         hub.WAKE_FOR, hub.WAKE_RETRY = 1, 0.05
+        # its timer would fire in a later test: HealthTest tries it on its own
+        self.focuses = []
+        hub._focus_later = self.focuses.append
 
     def tearDown(self):
         hub.adb, hub.move, hub.conn = self.real_adb, self.real_move, None
-        hub.reconnect, hub.WAKE_FOR, hub.WAKE_RETRY = self.real
+        hub.reconnect, hub.WAKE_FOR, hub.WAKE_RETRY, hub._focus_later = self.real
 
     def wait_command(self):
         self.assertTrue(self.adb.done.wait(2), "no adb command")
@@ -432,7 +561,7 @@ class ProjectorTest(unittest.TestCase):
         self.off()
         self.assertEqual(self.moves, [])  # the first look is no change
         self.on()
-        self.assertEqual(self.moves, [("screen", 100)])
+        self.assertEqual((self.moves, self.focuses), ([("screen", 100)], ["projector"]))
         self.off()
         self.assertEqual(self.moves, [("screen", 100)])  # not yet: close_after is 0.3 s here
         self.assertIsNotNone(hub.snapshot()["projectors"][0]["closes_at"])
@@ -550,6 +679,78 @@ class ProjectorTest(unittest.TestCase):
         hub.on_message(self.sock, "bifrost/projector/projector/key", "VOLUME_UP")
         time.sleep(0.5)
         self.assertIn("input keyevent KEYCODE_WAKEUP", self.adb.commands)
+
+    def test_a_broker_gone_while_publishing_still_keeps_the_state(self):
+        class Gone:
+            def sendall(self, data):
+                raise OSError("broken pipe")
+        hub.conn = Gone()
+        with self.assertLogs("hub", "WARNING") as logs:
+            self.look()
+        self.assertEqual(logs.output, ["WARNING:hub:projector: broken pipe"])
+        p = hub.snapshot()["projectors"][0]
+        self.assertEqual((p["on"], p["app"], p["error"]), (True, "com.netflix.ninja", None))
+
+    def test_an_error_is_logged_once_and_the_screen_stays(self):
+        self.on()
+        with self.assertLogs("hub", "WARNING") as logs:
+            hub.projector_seen("projector", None, "com.netflix.ninja", "adb: offline")
+            hub.projector_seen("projector", None, None, "adb: offline")
+        self.assertEqual(logs.output, ["WARNING:hub:projector: adb: offline"])
+        p = hub.snapshot()["projectors"][0]
+        self.assertEqual((p["on"], p["app"], p["error"]), (None, None, "adb: offline"))
+        self.assertEqual(self.moves, [])  # the first look at start is no turning on
+
+    def test_no_screen_without_a_cover(self):
+        cfg = hub.PROJECTOR_BY_ID["projector"]
+        cover = cfg.pop("cover")
+        try:
+            self.off()
+            self.on()
+        finally:
+            cfg["cover"] = cover
+        self.assertEqual(self.moves, [])
+
+    def test_off_after_on_at_start_closes_later_and_logs(self):
+        with hub.lock:
+            hub.state["covers"]["screen"]["pos"] = 0.0
+        self.on()
+        with self.assertLogs("hub", "INFO") as logs:
+            self.off()
+        self.assertIn("INFO:hub:projector turned off", logs.output)
+        self.assertIsNotNone(hub.snapshot()["projectors"][0]["closes_at"])
+
+    def test_focus_without_a_focus_action_is_logged(self):
+        cfg = hub.PROJECTOR_BY_ID["projector"]
+        focus = cfg.pop("focus")
+        try:
+            with self.assertLogs("hub", "WARNING") as logs:
+                hub.projector_command("projector", focus=True)
+                time.sleep(0.2)
+        finally:
+            cfg["focus"] = focus
+        self.assertEqual(logs.output, ["WARNING:hub:projector: no focus action for this projector"])
+        self.assertEqual(self.adb.commands, [])
+
+    def test_each_order_is_logged_but_a_tap(self):
+        for kw, said in (({"on": True}, "ON"), ({"on": False}, "OFF"), ({"focus": True}, "focus"),
+                         ({"key": "BACK"}, "BACK"), ({"app": "com.netflix.ninja"}, "com.netflix.ninja"),
+                         ({"app": hub.HOME}, hub.HOME)):
+            with self.subTest(kw=kw), self.assertLogs("hub", "INFO") as logs:
+                self.adb.done.clear()
+                hub.projector_command("projector", **kw)
+                self.wait_command()
+                time.sleep(0.05)
+            self.assertIn(f"INFO:hub:projector -> {said}", logs.output)
+        with self.assertNoLogs("hub", "INFO"):
+            self.adb.done.clear()
+            hub.projector_command("projector", tap=(0, 0))
+            self.wait_command()
+        self.assertEqual(self.adb.commands, [
+            "input keyevent KEYCODE_WAKEUP", "input keyevent KEYCODE_SLEEP", "am broadcast -a com.jmgo.tof.autofocus",
+            "input keyevent KEYCODE_BACK", "input keyevent KEYCODE_WAKEUP",
+            "monkey -p com.netflix.ninja -c android.intent.category.LEANBACK_LAUNCHER 1",
+            "input keyevent KEYCODE_WAKEUP", "input keyevent KEYCODE_HOME", "input tap 0 0"])
 
 
 class HealthAdb:
@@ -698,6 +899,43 @@ class HealthTest(unittest.TestCase):
             cover["open_time"] = saved
         self.assertEqual(orders, [{"focus": True}])
 
+    def test_no_memory_from_the_projector_is_an_error(self):
+        hub.adb = lambda projector, *args: "error: closed"
+        with self.assertRaises(OSError):
+            self.check()
+        self.assertIsNone(hub.snapshot()["projectors"][0]["memory"])
+
+    def test_without_vital_nor_reboot_at_only_the_memory_counts(self):
+        cfg = hub.PROJECTOR_BY_ID["projector"]
+        saved = {k: cfg.pop(k) for k in ("vital", "reboot_at")}
+        try:
+            self.check(self.NIGHT)
+            self.adb.vital = "4382"
+            self.check(self.NIGHT)
+            self.adb.memory = 100
+            self.check(self.NIGHT)
+        finally:
+            cfg.update(saved)
+        self.assertEqual(self.adb.actions(), ["shell am kill-all"])
+        self.assertTrue(all("pidof" not in c for c in self.adb.calls))
+        self.assertIsNone(hub.vitals["projector"])
+
+    def test_a_vital_first_seen_is_no_death(self):
+        self.adb.vital = ""
+        self.check()
+        self.adb.vital = "2112"
+        self.check()
+        self.assertEqual((self.adb.actions(), hub.snapshot()["projectors"][0]["vital_deaths"]), ([], 0))
+
+    def test_the_first_reason_stays(self):
+        self.watching()
+        with hub.lock:
+            hub.state["projectors"]["projector"]["due"] = "nightly"
+        self.check()
+        self.adb.vital = "4382"
+        self.check()
+        self.assertEqual(hub.snapshot()["projectors"][0]["due"], "nightly")
+
 
 class WebTest(unittest.TestCase):
     @classmethod
@@ -803,6 +1041,63 @@ class WebTest(unittest.TestCase):
                                      headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=5) as r:
             self.assertIsNone(r.headers["Access-Control-Allow-Origin"])
+
+    def test_post_error_messages(self):
+        for path, body, expected in (
+                ("/api/outlets/fan", "[]", (400, {"error": 'expected {"on": true} or {"on": false}'})),
+                ("/api/outlets/fan", "{}", (400, {"error": 'expected {"on": true} or {"on": false}'})),
+                ("/api/covers/screen", "{}", (400, {"error": 'expected {"position": 0-100}, {"stop": true}, '
+                                                              '{"press": "up"} or {"declare": 0}'})),
+                ("/api/covers/screen", '{"open": 1}', (400, {"error": 'expected {"position": 0-100}, {"stop": true}, '
+                                                                     '{"press": "up"} or {"declare": 0}'})),
+                ("/api/projectors/projector", '{"app": 3}', (400, {"error": 'expected {"on": true}, {"key": "HOME"}, '
+                                                                           '{"app": "<package>"}, {"tap": [0.5, 0.5]}, '
+                                                                           '{"focus": true} or {"restart": true}'})),
+                ("/api/projectors/projector", '{"focus": false}', (400, {"error": 'expected {"on": true}, {"key": "HOME"}, '
+                                                                                 '{"app": "<package>"}, {"tap": [0.5, 0.5]}, '
+                                                                                 '{"focus": true} or {"restart": true}'})),
+                ("/api/lamps/fan", '{"on": true}', (404, {"error": "unknown outlet"})),
+                ("/api/outlets", '{"on": true}', (404, {"error": "unknown outlet"})),
+                ("/api/outlets/fan/x", '{"on": true}', (404, {"error": "unknown outlet"})),
+                ("/other/outlets/fan", '{"on": true}', (404, {"error": "unknown outlet"})),
+                ("/api/projectors/fan", '{"on": true}', (404, {"error": "unknown projector"})),
+                ("/api/covers/fan?x=1", '{"on": true}', (404, {"error": "unknown cover"}))):
+            with self.subTest(path=path, body=body):
+                self.assertEqual(self.post(path, body), expected)
+        self.assertEqual(self.post("/api/outlets/fan?x=1", '{"on": false}', "application/json; charset=utf-8"),
+                         (202, {"id": "fan", "on": False}))
+
+    def test_post_every_projector_order(self):
+        orders, real = [], hub.projector_command
+        hub.projector_command = lambda pid, **kw: orders.append((pid, kw))
+        try:
+            for body in ({"on": False}, {"focus": True}, {"restart": True}, {"app": "home"}, {"app": "com.netflix.ninja"},
+                         {"tap": [1, 0.5]}, {"key": "DPAD_UP"}):
+                with self.subTest(body=body):
+                    self.assertEqual(self.post("/api/projectors/projector", json.dumps(body)), (202, {"id": "projector", **body}))
+            hub.conn = None  # adb, not the broker
+            self.assertEqual(self.post("/api/projectors/projector", '{"on": true}')[0], 202)
+        finally:
+            hub.projector_command = real
+        self.assertEqual(len(orders), 8)
+        self.assertEqual(orders[5], ("projector", {"tap": [1, 0.5]}))
+
+    def test_post_cover_without_the_broker_or_with_it_gone(self):
+        hub.conn = None
+        self.assertEqual(self.post("/api/covers/screen", '{"position": 10}'), (503, {"error": "the broker is not connected"}))
+
+        class Gone:
+            def sendall(self, data):
+                raise OSError("broken pipe")
+        hub.conn = Gone()
+        self.assertEqual(self.post("/api/outlets/fan", '{"on": true}'), (503, {"error": "broker: broken pipe"}))
+
+    def test_post_declare_without_a_move(self):
+        self.assertEqual(self.post("/api/covers/screen", '{"declare": 0}'), (202, {"id": "screen", "declare": 0}))
+        self.assertEqual(self.post("/api/covers/screen", '{"press": "stop"}'), (202, {"id": "screen", "press": "stop"}))
+        settle()
+        self.assertEqual([p for t, p, _ in self.sock.published if t == "433/send"], ["5552 188"])
+        self.assertEqual(screen()["position"], 0)
 
     def test_no_file_outside_the_dashboard(self):
         for path in ("/../hub/hub.py", "/%2e%2e/outlets.toml", "/tests/"):
