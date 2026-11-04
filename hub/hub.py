@@ -248,50 +248,78 @@ def _press(cid: str, key: str) -> None:
 
 def _run(cid: str, target: int | None, press: bool, run: threading.Event) -> None:
     """Moves to target (None: stop). press=False only follows a move the remote started."""
-    cfg = COVER_BY_ID[cid]
     try:
-        with lock:
-            pos, moving = _position(cid), state["covers"][cid]["dir"]
         if target is None:
             _press(cid, "stop")
             return _cover_set(cid, 0)
-        if pos is None:  # unknown: all the way up first, then it is 0. Not pressing (following
-            if not press and target:  # the remote): only its up gets there, a down stays unknown
-                return
-            if press:
-                _press(cid, "up")
-            _cover_set(cid, -1, target=target)
-            if run.wait(cfg["close_time"]):
-                return
-            if press:
-                _press(cid, "stop")
-            _cover_set(cid, 0, pos=0.0)
-            pos, moving = 0.0, 0
-        d = 1 if target > pos else -1 if target < pos else 0
-        if press and moving and moving != d:
-            _press(cid, "stop")
-            _cover_set(cid, 0)
-            if run.wait(REVERSE_PAUSE):
-                return
-        if d == 0:
-            return _cover_set(cid, 0, target=target)
-        if press:
-            _press(cid, "down" if d > 0 else "up")
-        _cover_set(cid, d, target=target)
-        duration = abs(target - pos) / 100 * (cfg["open_time"] if d > 0 else cfg["close_time"])
-        if run.wait(duration):
-            return
-        if press:
-            _press(cid, "stop")
-        _cover_set(cid, 0, pos=float(target))
+        _move_to(cid, target, press, run)
     except OSError as e:  # the broker went away mid-move: where the cover stopped is unknown
-        log.warning("%s: %s", cid, e)
-        with lock:
-            state["covers"][cid].update(pos=None, dir=0)
+        _lost(cid, e)
     finally:
-        with lock:
-            if state["covers"][cid]["run"] is run:
-                state["covers"][cid]["run"] = None
+        _done(cid, run)
+
+
+def _move_to(cid: str, target: int, press: bool, run: threading.Event) -> None:
+    with lock:
+        pos, moving = _position(cid), state["covers"][cid]["dir"]
+    if pos is None:  # unknown: all the way up first, then it is 0. Not pressing (following
+        if not press and target:  # the remote): only its up gets there, a down stays unknown
+            return
+        if _to_the_top(cid, target, press, run):
+            return
+        pos, moving = 0.0, 0
+    d = 1 if target > pos else -1 if target < pos else 0
+    if press and moving and moving != d and _stop_first(cid, run):
+        return
+    if d == 0:
+        return _cover_set(cid, 0, target=target)
+    _travel(cid, pos, target, press, run)
+
+
+def _to_the_top(cid: str, target: int, press: bool, run: threading.Event) -> bool:
+    """Up for a whole close_time, from wherever it is: then it is at 0. True when cancelled on the way."""
+    if press:
+        _press(cid, "up")
+    _cover_set(cid, -1, target=target)
+    if run.wait(COVER_BY_ID[cid]["close_time"]):
+        return True
+    if press:
+        _press(cid, "stop")
+    _cover_set(cid, 0, pos=0.0)
+    return False
+
+
+def _stop_first(cid: str, run: threading.Event) -> bool:
+    """Stop, and the pause before the other direction. True when cancelled meanwhile."""
+    _press(cid, "stop")
+    _cover_set(cid, 0)
+    return run.wait(REVERSE_PAUSE)
+
+
+def _travel(cid: str, pos: float, target: int, press: bool, run: threading.Event) -> None:
+    """From pos to target (not there yet), for the share of the measured time that distance takes."""
+    cfg, d = COVER_BY_ID[cid], 1 if target > pos else -1
+    if press:
+        _press(cid, "down" if d > 0 else "up")
+    _cover_set(cid, d, target=target)
+    duration = abs(target - pos) / 100 * (cfg["open_time"] if d > 0 else cfg["close_time"])
+    if run.wait(duration):
+        return
+    if press:
+        _press(cid, "stop")
+    _cover_set(cid, 0, pos=float(target))
+
+
+def _lost(cid: str, e: OSError) -> None:
+    log.warning("%s: %s", cid, e)
+    with lock:
+        state["covers"][cid].update(pos=None, dir=0)
+
+
+def _done(cid: str, run: threading.Event) -> None:
+    with lock:
+        if state["covers"][cid]["run"] is run:
+            state["covers"][cid]["run"] = None
 
 
 def _manual(cid: str, key: str, run: threading.Event) -> None:
@@ -302,11 +330,8 @@ def _manual(cid: str, key: str, run: threading.Event) -> None:
     try:
         with lock:
             moving = state["covers"][cid]["dir"]
-        if moving and moving != d:
-            _press(cid, "stop")
-            _cover_set(cid, 0)
-            if run.wait(REVERSE_PAUSE):
-                return
+        if moving and moving != d and _stop_first(cid, run):
+            return
         _press(cid, key)
         _cover_set(cid, d, target=100 if d > 0 else 0)
         if run.wait(cfg["open_time"] if d > 0 else cfg["close_time"]):
@@ -317,13 +342,9 @@ def _manual(cid: str, key: str, run: threading.Event) -> None:
         else:      # down from unknown stays unknown; from a known place, the estimate followed
             _cover_set(cid, 0)
     except OSError as e:
-        log.warning("%s: %s", cid, e)
-        with lock:
-            state["covers"][cid].update(pos=None, dir=0)
+        _lost(cid, e)
     finally:
-        with lock:
-            if state["covers"][cid]["run"] is run:
-                state["covers"][cid]["run"] = None
+        _done(cid, run)
 
 
 def _start(cid: str, fn, *args) -> None:
@@ -383,27 +404,31 @@ def follow(cid: str, key: str) -> None:
     move(cid, 100 if key == "down" else 0, press=False)
 
 
-def on_cover(topic: str, payload: str, retained: bool) -> None:
-    _, _, cid, cmd = topic.split("/")
-    if cid not in COVER_BY_ID:
-        return log.warning("ignored %s (unknown cover)", topic)
-    value = payload.strip().upper()
-    if cmd == "press":
-        if value not in ("UP", "DOWN", "STOP"):
-            return log.warning("ignored %s = %r (not up, down or stop)", topic, payload)
-        return press(cid, value.lower())
-    if cmd == "declare":
-        if not (value.isdigit() and int(value) <= 100):
-            return log.warning("ignored %s = %r (not 0-100)", topic, payload)
-        return declare(cid, int(value))
-    if cmd == "set":
-        target = {"OPEN": 100, "CLOSE": 0, "STOP": None}.get(value, value)
-        if target is not None and not (isinstance(target, int) or target.isdigit() and int(target) <= 100):
-            return log.warning("ignored %s = %r (not 0-100, OPEN, CLOSE or STOP)", topic, payload)
-        return move(cid, None if target is None else int(target))
-    if not retained:  # our own publishes coming back
-        return
-    with lock:  # the broker's memory, at (re)connection: where the cover was left
+def _press_order(topic: str, payload: str, cid: str, value: str) -> None:
+    if value not in ("UP", "DOWN", "STOP"):
+        return log.warning("ignored %s = %r (not up, down or stop)", topic, payload)
+    press(cid, value.lower())
+
+
+def _declare_order(topic: str, payload: str, cid: str, value: str) -> None:
+    if not (value.isdigit() and int(value) <= 100):
+        return log.warning("ignored %s = %r (not 0-100)", topic, payload)
+    declare(cid, int(value))
+
+
+def _set_order(topic: str, payload: str, cid: str, value: str) -> None:
+    target = {"OPEN": 100, "CLOSE": 0, "STOP": None}.get(value, value)
+    if target is not None and not (isinstance(target, int) or target.isdigit() and int(target) <= 100):
+        return log.warning("ignored %s = %r (not 0-100, OPEN, CLOSE or STOP)", topic, payload)
+    move(cid, None if target is None else int(target))
+
+
+COVER_ORDERS = {"press": _press_order, "declare": _declare_order, "set": _set_order}
+
+
+def _restore(cid: str, cmd: str, value: str) -> None:
+    """The broker's memory, at (re)connection: where the cover was left."""
+    with lock:
         c = state["covers"][cid]
         if c["dir"] or c["run"]:
             return
@@ -411,6 +436,17 @@ def on_cover(topic: str, payload: str, retained: bool) -> None:
             c.update(pos=None, lost=True)  # the hub stopped mid-move: the motor went on
         elif cmd == "position" and value.isdigit() and c["pos"] is None and not c.get("lost"):
             c["pos"] = min(100.0, float(value))
+
+
+def on_cover(topic: str, payload: str, retained: bool) -> None:
+    _, _, cid, cmd = topic.split("/")
+    if cid not in COVER_BY_ID:
+        return log.warning("ignored %s (unknown cover)", topic)
+    value = payload.strip().upper()
+    if cmd in COVER_ORDERS:
+        return COVER_ORDERS[cmd](topic, payload, cid, value)
+    if retained:  # else our own publishes coming back
+        _restore(cid, cmd, value)
 
 
 def adb(projector: dict, *args: str) -> str:
@@ -451,8 +487,18 @@ def probe(projector: dict) -> tuple[bool, str | None]:
 def projector_seen(pid: str, on: bool | None, app: str | None, error: str | None) -> None:
     """Keeps what the last look found, publishes what changed, and moves the screen when the
     projector turns on or off, whoever turned it (Home app, its own remote, the dashboard)."""
-    cfg = PROJECTOR_BY_ID[pid]
     app = app if on else None
+    before, changed = _remember(pid, on, app, error)
+    if error and changed:
+        log.warning("%s: %s", pid, error)
+    if changed and on is not None:
+        _publish_projector(pid, on, app)
+    if on is not None and PROJECTOR_BY_ID[pid].get("cover") in COVER_BY_ID:
+        _screen_follows(pid, before, on)
+
+
+def _remember(pid: str, on: bool | None, app: str | None, error: str | None) -> tuple[bool | None, bool]:
+    """Keeps what the look found: the last known state before it, and whether it changed."""
     with lock:
         p = state["projectors"][pid]
         before, changed = p["known"], (p["on"], p["app"]) != (on, app)
@@ -461,28 +507,34 @@ def projector_seen(pid: str, on: bool | None, app: str | None, error: str | None
             p["known"] = on
         if changed and on is not None:
             p["at"] = now()
-    if error and changed:
-        log.warning("%s: %s", pid, error)
+    return before, changed
+
+
+def _publish_projector(pid: str, on: bool, app: str | None) -> None:
     sock = conn
-    if changed and on is not None and sock is not None:
-        try:
-            publish(sock, f"bifrost/projector/{pid}/state", "ON" if on else "OFF", retain=True)
-            publish(sock, f"bifrost/projector/{pid}/app", app or "", retain=True)
-        except OSError as e:
-            log.warning("%s: %s", pid, e)
-    if on is None or cfg.get("cover") not in COVER_BY_ID:
+    if sock is None:
         return
+    try:
+        publish(sock, f"bifrost/projector/{pid}/state", "ON" if on else "OFF", retain=True)
+        publish(sock, f"bifrost/projector/{pid}/app", app or "", retain=True)
+    except OSError as e:
+        log.warning("%s: %s", pid, e)
+
+
+def _screen_follows(pid: str, before: bool | None, on: bool) -> None:
+    """Down when the projector turns on, up a while after it turned off."""
+    cover = PROJECTOR_BY_ID[pid]["cover"]
     if before is not None and on != before:
         log.info("%s turned %s", pid, "on" if on else "off")
         if on:
             _cancel_close(pid)
-            move(cfg["cover"], 100)
+            move(cover, 100)
             _focus_later(pid)
         else:
             _close_later(pid)
     elif before is None and not on:  # the hub (re)started with the projector off: a close may have been lost
         with lock:
-            down = _position(cfg["cover"]) != 0
+            down = _position(cover) != 0
         if down:
             _close_later(pid)
 
@@ -583,6 +635,17 @@ def checkup(pid: str, when: datetime) -> None:
             return
         idle = not p["on"] or p["app"] in (HOME, SCREENSAVER)
     vital = cfg.get("vital")
+    memory, uptime, pids = _health(pid, cfg, vital)
+    with lock:
+        p["memory"] = memory
+        clean = _vital_killed(pid, p, vital, pids)
+        _nightly(pid, when, uptime, idle)
+        due = p["due"] if idle and time.monotonic() - last_restart[pid] >= RESTART_GAP else None
+    _care(pid, cfg, memory, due, clean)
+
+
+def _health(pid: str, cfg: dict, vital: str | None) -> tuple[int, int, str | None]:
+    """MB available, seconds up, and the vital process's pids (None when there is no vital process)."""
     with adb_locks[pid]:
         out = adb(cfg, "shell", "grep MemAvailable /proc/meminfo; cat /proc/uptime"
                                 + (f"; echo vital=$(pidof {vital})" if vital else ""))
@@ -590,26 +653,38 @@ def checkup(pid: str, when: datetime) -> None:
     uptime = re.search(r"^(\d+)", out, re.M)
     if not memory or not uptime:
         raise OSError("adb: no memory nor uptime from the projector")
-    memory, uptime = int(memory.group(1)) // 1024, int(uptime.group(1))
     pids = re.search(r"^vital=(.*)$", out, re.M)
-    pids = pids and pids.group(1).strip()
-    clean = False
-    with lock:
-        p["memory"] = memory
-        if vital and vitals[pid] and pids != vitals[pid]:
-            p["vital_deaths"] += 1
-            p["due"] = p["due"] or f"{vital} was killed"
-            log.warning("%s: %s was killed (pid %s, now %s), %d MB available", pid, vital, vitals[pid], pids or "none", memory)
-            clean = True
-        if vital:
-            vitals[pid] = pids or None
-        if at := cfg.get("reboot_at"):
-            start = when.replace(hour=int(at[:2]), minute=int(at[3:]), second=0, microsecond=0)
-            if (0 <= (when - start).total_seconds() < NIGHT_WINDOW and nights[pid] != when.date()
-                    and uptime >= MIN_UPTIME and idle):
-                nights[pid] = when.date()
-                p["due"] = p["due"] or "nightly"
-        due = p["due"] if idle and time.monotonic() - last_restart[pid] >= RESTART_GAP else None
+    return int(memory.group(1)) // 1024, int(uptime.group(1)), pids and pids.group(1).strip()
+
+
+def _vital_killed(pid: str, p: dict, vital: str | None, pids: str | None) -> bool:
+    """Whether the vital process died since the last checkup: a restart is then due. Under lock."""
+    if not vital:
+        return False
+    killed = bool(vitals[pid]) and pids != vitals[pid]
+    if killed:
+        p["vital_deaths"] += 1
+        p["due"] = p["due"] or f"{vital} was killed"
+        log.warning("%s: %s was killed (pid %s, now %s), %d MB available", pid, vital, vitals[pid], pids or "none",
+                    p["memory"])
+    vitals[pid] = pids or None
+    return killed
+
+
+def _nightly(pid: str, when: datetime, uptime: int, idle: bool) -> None:
+    """From reboot_at and for NIGHT_WINDOW, once a day, nobody watching: a restart is due. Under lock."""
+    p = state["projectors"][pid]
+    if not (at := PROJECTOR_BY_ID[pid].get("reboot_at")):
+        return
+    start = when.replace(hour=int(at[:2]), minute=int(at[3:]), second=0, microsecond=0)
+    if (0 <= (when - start).total_seconds() < NIGHT_WINDOW and nights[pid] != when.date()
+            and uptime >= MIN_UPTIME and idle):
+        nights[pid] = when.date()
+        p["due"] = p["due"] or "nightly"
+
+
+def _care(pid: str, cfg: dict, memory: int, due: str | None, clean: bool) -> None:
+    """The restart when one is due, else the apps in the background killed when needed."""
     if memory < MEMORY_FLOOR:
         log.warning("%s: %d MB available", pid, memory)
         clean = True
@@ -723,23 +798,28 @@ def projector_command(pid: str, on: bool | None = None, key: str | None = None, 
             if on is not None or app:
                 power()
             with adb_locks[pid]:
-                if focus:
-                    if "focus" not in projector:
-                        raise OSError("no focus action for this projector")
-                    adb(projector, "shell", f"am broadcast -a {projector['focus']}")
-                if tap:
-                    w, h = screen_size(projector)
-                    adb(projector, "shell", f"input tap {round(tap[0] * (w - 1))} {round(tap[1] * (h - 1))}")
-                if key or app == HOME:
-                    adb(projector, "shell", f"input keyevent KEYCODE_{key or 'HOME'}")
-                elif app:
-                    adb(projector, "shell", f"monkey -p {app} -c android.intent.category.LEANBACK_LAUNCHER 1")
+                _order(projector, key, app, tap, focus)
             if not tap:  # a tap is no news
                 log.info("%s -> %s", pid, "ON" if on else "OFF" if on is False else "focus" if focus else key or app)
         except OSError as e:
             log.warning("%s: %s", pid, e)
         pokes[pid].set()
     threading.Thread(target=run, daemon=True, name=f"projector-{pid}").start()
+
+
+def _order(projector: dict, key: str | None, app: str | None, tap: tuple[float, float] | None, focus: bool) -> None:
+    """The adb commands of one order, the projector awake. Under its adb lock."""
+    if focus:
+        if "focus" not in projector:
+            raise OSError("no focus action for this projector")
+        adb(projector, "shell", f"am broadcast -a {projector['focus']}")
+    if tap:
+        w, h = screen_size(projector)
+        adb(projector, "shell", f"input tap {round(tap[0] * (w - 1))} {round(tap[1] * (h - 1))}")
+    if key or app == HOME:
+        adb(projector, "shell", f"input keyevent KEYCODE_{key or 'HOME'}")
+    elif app:
+        adb(projector, "shell", f"monkey -p {app} -c android.intent.category.LEANBACK_LAUNCHER 1")
 
 
 def split_jpegs(buf: bytes) -> tuple[list[bytes], bytes]:
@@ -934,40 +1014,55 @@ def on_message(sock: socket.socket, topic: str, payload: str, retained: bool = F
             on_projector(topic, payload)
         return
     if topic.startswith("bifrost/outlet/") and len(parts) == 4:
-        outlet, cmd, value = BY_ID.get(parts[2]), parts[3], payload.strip().upper()
-        if cmd == "set":
-            if outlet and value in ("ON", "OFF"):
-                switch(sock, outlet, value == "ON")
-            else:
-                log.warning("ignored %s = %r (unknown outlet or not ON/OFF)", topic, payload)
-        elif cmd == "state" and outlet and value in ("ON", "OFF"):
-            with lock:
-                prev = state["outlets"].get(outlet["id"], {})
-                state["outlets"][outlet["id"]] = {"on": value == "ON", "at": prev.get("at")}
-        return
+        return on_outlet(sock, topic, payload)
     if topic in ("433/send", "433/receive"):
         payload = payload.split(" ", 1)[0]  # 433/send may carry the pulse length after the code
-    if topic == "433/receive" and payload in BY_CODE:
-        oid, on = BY_CODE[payload]
-        with lock:
-            state["outlets"][oid] = {"on": on, "at": now()}
-        publish(sock, f"bifrost/outlet/{oid}/state", "ON" if on else "OFF", retain=True)
-    if topic == "433/receive" and payload in COVER_CODES:
-        cid, key = COVER_CODES[payload]
-        with lock:
-            sent = state["covers"][cid]["sent"].pop(payload, 0)
-        if time.time() - sent >= ECHO_WINDOW:
-            heard(cid, key)
+    if topic == "433/receive":
+        received(sock, payload)
     with lock:
         if topic == "433/status":
             state["bridge_seen"] = time.time()
         elif topic in ("433/send", "433/receive"):
-            last = state["last_code"]
-            echo = (topic == "433/receive" and last and last["via"] == "sent" and last["code"] == payload
-                    and time.time() - last["ts"] < ECHO_WINDOW)
-            if not echo:
-                state["last_code"] = {"code": payload, "via": "sent" if topic == "433/send" else "remote",
-                                      "at": now(), "ts": time.time()}
+            _last_code(topic, payload)
+
+
+def on_outlet(sock: socket.socket, topic: str, payload: str) -> None:
+    _, _, oid, cmd = topic.split("/")
+    outlet, value = BY_ID.get(oid), payload.strip().upper()
+    if cmd == "set":
+        if outlet and value in ("ON", "OFF"):
+            switch(sock, outlet, value == "ON")
+        else:
+            log.warning("ignored %s = %r (unknown outlet or not ON/OFF)", topic, payload)
+    elif cmd == "state" and outlet and value in ("ON", "OFF"):
+        with lock:
+            prev = state["outlets"].get(outlet["id"], {})
+            state["outlets"][outlet["id"]] = {"on": value == "ON", "at": prev.get("at")}
+
+
+def received(sock: socket.socket, code: str) -> None:
+    """A code heard on 433/receive: an outlet's state, or the cover's remote unless it is the hub's echo."""
+    if code in BY_CODE:
+        oid, on = BY_CODE[code]
+        with lock:
+            state["outlets"][oid] = {"on": on, "at": now()}
+        publish(sock, f"bifrost/outlet/{oid}/state", "ON" if on else "OFF", retain=True)
+    if code in COVER_CODES:
+        cid, key = COVER_CODES[code]
+        with lock:
+            sent = state["covers"][cid]["sent"].pop(code, 0)
+        if time.time() - sent >= ECHO_WINDOW:
+            heard(cid, key)
+
+
+def _last_code(topic: str, code: str) -> None:
+    """The last code sent or heard, the bridge's echo of what it sent aside. Under lock."""
+    last = state["last_code"]
+    echo = (topic == "433/receive" and last and last["via"] == "sent" and last["code"] == code
+            and time.time() - last["ts"] < ECHO_WINDOW)
+    if not echo:
+        state["last_code"] = {"code": code, "via": "sent" if topic == "433/send" else "remote",
+                              "at": now(), "ts": time.time()}
 
 
 def listen() -> None:
@@ -1047,6 +1142,51 @@ def snapshot() -> dict:
         }
 
 
+def _is_package(app) -> bool:
+    return isinstance(app, str) and bool(PACKAGE_RE.fullmatch(app))
+
+
+def _is_tap(tap) -> bool:
+    return isinstance(tap, list) and len(tap) == 2 and all(type(v) in (int, float) and 0 <= v <= 1 for v in tap)
+
+
+def _projector_body(body: dict) -> None:
+    """One order, of the kinds POST takes for a projector. Raises ValueError otherwise."""
+    if len(body) != 1 or not (isinstance(body.get("on"), bool)
+                              or isinstance(body.get("key"), str) and KEY_RE.fullmatch(body["key"])
+                              or body.get("focus") is True or body.get("restart") is True
+                              or body.get("app") == HOME or _is_package(body.get("app")) or _is_tap(body.get("tap"))):
+        raise ValueError
+
+
+def _outlet_body(body: dict) -> bool:
+    """{"on": true} or {"on": false}: the outlet's new state. Raises otherwise."""
+    on = body["on"]
+    if not isinstance(on, bool):
+        raise ValueError
+    return on
+
+
+def _cover_body(body: dict) -> int | None:
+    """The position to move to or to declare, None for a stop or a press. Raises otherwise."""
+    if len(body) != 1:
+        raise ValueError
+    if body.get("stop") is True or body.get("press") in ("up", "down", "stop"):
+        return None
+    position = body["declare"] if "declare" in body else body["position"]
+    if type(position) is not int or not 0 <= position <= 100:
+        raise ValueError
+    return position
+
+
+POST_KINDS = {"outlets": BY_ID, "covers": COVER_BY_ID, "projectors": PROJECTOR_BY_ID}
+POST_BODIES = {"outlets": _outlet_body, "covers": _cover_body, "projectors": _projector_body}
+POST_EXPECTED = {"outlets": 'expected {"on": true} or {"on": false}',
+                 "covers": 'expected {"position": 0-100}, {"stop": true}, {"press": "up"} or {"declare": 0}',
+                 "projectors": 'expected {"on": true}, {"key": "HOME"}, {"app": "<package>"}, {"tap": [0.5, 0.5]}, '
+                               '{"focus": true} or {"restart": true}'}
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(DASHBOARD_DIR), **kwargs)
@@ -1103,60 +1243,38 @@ class Handler(SimpleHTTPRequestHandler):
         # another origin, gets no answer, and gives up. So a web page elsewhere cannot switch.
         parts = self.path.split("?", 1)[0].strip("/").split("/")
         kind = parts[1] if len(parts) == 3 and parts[0] == "api" else None
-        outlet = BY_ID.get(parts[2]) if kind == "outlets" else None
-        cover = COVER_BY_ID.get(parts[2]) if kind == "covers" else None
-        projector = PROJECTOR_BY_ID.get(parts[2]) if kind == "projectors" else None
-        if not outlet and not cover and not projector:
+        device = POST_KINDS.get(kind, {}).get(parts[2]) if kind else None
+        if not device:
             return self._json(404, {"error": f"unknown {kind[:-1] if kind in ('covers', 'projectors') else 'outlet'}"})
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
             return self._json(415, {"error": "send JSON"})
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
-            if projector:
-                if len(body) != 1 or not (isinstance(body.get("on"), bool)
-                                          or isinstance(body.get("key"), str) and KEY_RE.fullmatch(body["key"])
-                                          or body.get("focus") is True or body.get("restart") is True
-                                          or body.get("app") == HOME
-                                          or isinstance(body.get("app"), str) and PACKAGE_RE.fullmatch(body["app"])
-                                          or isinstance(body.get("tap"), list) and len(body["tap"]) == 2
-                                          and all(type(v) in (int, float) and 0 <= v <= 1 for v in body["tap"])):
-                    raise ValueError
-            elif outlet:
-                on = body["on"]
-                if not isinstance(on, bool):
-                    raise ValueError
-            elif len(body) != 1:
-                raise ValueError
-            elif body.get("stop") is True or body.get("press") in ("up", "down", "stop"):
-                position = None
-            else:
-                position = body["declare"] if "declare" in body else body["position"]
-                if type(position) is not int or not 0 <= position <= 100:
-                    raise ValueError
+            value = POST_BODIES[kind](body)
         except (ValueError, KeyError, TypeError, AttributeError):
-            return self._json(400, {"error": 'expected {"on": true} or {"on": false}' if outlet
-                                    else 'expected {"position": 0-100}, {"stop": true}, {"press": "up"} or {"declare": 0}' if cover
-                                    else 'expected {"on": true}, {"key": "HOME"}, {"app": "<package>"}, {"tap": [0.5, 0.5]}, '
-                                         '{"focus": true} or {"restart": true}'})
-        if projector:  # adb, not the broker
-            projector_command(projector["id"], **body)
-            return self._json(202, {"id": projector["id"], **body})
+            return self._json(400, {"error": POST_EXPECTED[kind]})
+        if kind == "projectors":  # adb, not the broker
+            projector_command(device["id"], **body)
+            return self._json(202, {"id": device["id"], **body})
         sock = conn
         if sock is None:
             return self._json(503, {"error": "the broker is not connected"})
-        if cover:
-            if "press" in body:
-                press(cover["id"], body["press"])
-            elif "declare" in body:
-                declare(cover["id"], position)
-            else:
-                move(cover["id"], position)
-            return self._json(202, {"id": cover["id"], **body})
+        if kind == "covers":
+            return self._post_cover(device, body, value)
         try:
-            switch(sock, outlet, on)
+            switch(sock, device, value)
         except OSError as e:
             return self._json(503, {"error": f"broker: {e}"})
-        self._json(202, {"id": outlet["id"], "on": on})
+        self._json(202, {"id": device["id"], "on": value})
+
+    def _post_cover(self, cover: dict, body: dict, position: int | None) -> None:
+        if "press" in body:
+            press(cover["id"], body["press"])
+        elif "declare" in body:
+            declare(cover["id"], position)
+        else:
+            move(cover["id"], position)
+        self._json(202, {"id": cover["id"], **body})
 
     def end_headers(self):
         self.send_header("Cache-Control", "no-cache")
