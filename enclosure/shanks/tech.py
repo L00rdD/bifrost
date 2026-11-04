@@ -93,24 +93,42 @@ def section(ob, z):
     bm = bmesh.new(); bm.from_mesh(ob.data)
     res = bmesh.ops.bisect_plane(bm, geom=bm.verts[:] + bm.edges[:] + bm.faces[:], plane_co=(0, 0, z), plane_no=(0, 0, 1))
     edges = [e for e in res["geom_cut"] if isinstance(e, bmesh.types.BMEdge)]
+    return [(v.co.x, v.co.y) for v in longest_loop(neighbours(edges))]
+
+
+def neighbours(edges):
+    """Each vertex of the cut and the ones an edge joins it to."""
     nxt = {}
     for e in edges:
         a, b = e.verts
         nxt.setdefault(a, []).append(b); nxt.setdefault(b, []).append(a)
+    return nxt
+
+
+def longest_loop(nxt):
     seen, best = set(), []
     for start in nxt:
         if start in seen:
             continue
-        loop, prev, cur = [start], None, start
-        seen.add(start)
-        while True:
-            cand = [v for v in nxt[cur] if v is not prev]
-            if not cand or cand[0] is start or cand[0] in seen:
-                break
-            prev, cur = cur, cand[0]; seen.add(cur); loop.append(cur)
+        loop = walk(nxt, start, seen)
         if len(loop) > len(best):
             best = loop
-    return [(v.co.x, v.co.y) for v in best]
+    return best
+
+
+def walk(nxt, start, seen):
+    """The vertices from start on, edge after edge, until back at start or on a vertex already seen."""
+    loop, prev, cur = [start], None, start
+    seen.add(start)
+    while (nv := step(nxt, prev, cur)) is not None and nv is not start and nv not in seen:
+        prev, cur = cur, nv; seen.add(cur); loop.append(cur)
+    return loop
+
+
+def step(nxt, prev, cur):
+    """The next vertex after cur, not going back to prev; None at a dead end."""
+    cand = [v for v in nxt[cur] if v is not prev]
+    return cand[0] if cand else None
 
 
 def prism(name, outline, z0, z1):

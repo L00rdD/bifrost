@@ -109,34 +109,53 @@ def remove_thin_brim():
     # and the body are solid, so the thin faces there are the brim's: cut a skin around them.
     tree = BVHTree.FromObject(body, bpy.context.evaluated_depsgraph_get())
     bm = bmesh.new()
+    thin = brim_prisms(tree, bm)
+    print("THIN_FACES", thin)
+    if thin:
+        cut_skin(bm)
+
+
+def on_brim(c):
+    """Where the brim was: above 66 mm, behind the head, 16 to 38 mm around its centre."""
+    return c.z >= 66 and c.y >= HEAD.y + 6 and 16 < math.hypot(c.x - HEAD.x, c.y - HEAD.y) < 38
+
+
+def brim_prisms(tree, bm):
+    """A prism through the plate under each thin face where the brim was, into bm; how many."""
     thin = 0
     for f in body.data.polygons:
         c, n = f.center, f.normal
-        if c.z < 66 or c.y < HEAD.y + 6 or not 16 < math.hypot(c.x - HEAD.x, c.y - HEAD.y) < 38:
+        if not on_brim(c):
             continue
         hit = tree.ray_cast(c - n * 0.05, -n, 4.0)
         if hit[0] is None:
             continue
         thin += 1
-        t = hit[3] + 0.1
-        for k in (-0.4, t + 0.4):          # a prism through the plate, a little beyond both faces
-            pass
-        ring = [body.data.vertices[i].co for i in f.vertices]
-        lo = [bm.verts.new(v + n * 0.4) for v in ring]
-        hi = [bm.verts.new(v - n * (t + 0.4)) for v in ring]
-        bm.faces.new(lo); bm.faces.new(hi[::-1])
-        for i in range(len(ring)):
-            j = (i + 1) % len(ring)
-            bm.faces.new((lo[i], hi[i], hi[j], lo[j]))
-    print("THIN_FACES", thin)
-    if thin:
-        skin = mesh_object("skin", bm)
-        m = skin.modifiers.new("remesh", "REMESH")       # one clean solid from the pile of prisms
-        m.mode, m.voxel_size = "VOXEL", VOXEL
-        bpy.context.view_layer.objects.active = skin
-        bpy.ops.object.modifier_apply(modifier=m.name)
-        boolean(body, skin, "DIFFERENCE")
-        bpy.data.objects.remove(skin)
+        prism_through(bm, f, hit[3] + 0.1)
+    return thin
+
+
+def prism_through(bm, f, t):
+    """A prism on face f through a plate t thick, a little beyond both faces."""
+    n = f.normal
+    ring = [body.data.vertices[i].co for i in f.vertices]
+    lo = [bm.verts.new(v + n * 0.4) for v in ring]
+    hi = [bm.verts.new(v - n * (t + 0.4)) for v in ring]
+    bm.faces.new(lo); bm.faces.new(hi[::-1])
+    for i in range(len(ring)):
+        j = (i + 1) % len(ring)
+        bm.faces.new((lo[i], hi[i], hi[j], lo[j]))
+
+
+def cut_skin(bm):
+    """The pile of prisms made one clean solid, and cut out of the body."""
+    skin = mesh_object("skin", bm)
+    m = skin.modifiers.new("remesh", "REMESH")
+    m.mode, m.voxel_size = "VOXEL", VOXEL
+    bpy.context.view_layer.objects.active = skin
+    bpy.ops.object.modifier_apply(modifier=m.name)
+    boolean(body, skin, "DIFFERENCE")
+    bpy.data.objects.remove(skin)
 
 
 remove_thin_brim()

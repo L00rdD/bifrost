@@ -64,11 +64,21 @@ def tube(points, section, closed_ends=True):
     """Sweep a 2D section (list of (u, v): u across the flank, v off it) along points."""
     rings = []
     for i, c in enumerate(points):
-        t = (points[min(i + 1, len(points) - 1)] - points[max(i - 1, 0)]).normalized()
-        off = Vector((1, 0, 0))                                   # off the flank
-        across = t.cross(off).normalized()
-        off = across.cross(t).normalized()
+        across, off = frame(points, i)
         rings.append([bm.verts.new(c + across * u + off * v) for u, v in section(i / (len(points) - 1))])
+    stitch(rings, closed_ends)
+
+
+def frame(points, i):
+    """Across the flank and off it at point i, square to the line."""
+    t = (points[min(i + 1, len(points) - 1)] - points[max(i - 1, 0)]).normalized()
+    off = Vector((1, 0, 0))                                   # off the flank
+    across = t.cross(off).normalized()
+    return across, across.cross(t).normalized()
+
+
+def stitch(rings, closed_ends):
+    """The faces between one ring and the next, and both ends."""
     for a, b in zip(rings, rings[1:]):
         n = len(a)
         for j in range(n):
