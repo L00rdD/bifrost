@@ -1,0 +1,495 @@
+// Tests of the dashboard's script (dashboard/bifrost.js) on a fake page:
+//   node --test tests/
+const test = require("node:test");
+const assert = require("node:assert");
+const { page, run, settle } = require("./dashboard-page.cjs");
+
+const NOW = Date.parse("2026-11-04T20:00:00Z");
+const ago = (s) => new Date(NOW - s * 1000).toISOString();
+
+const status = (more = {}) => ({
+  updated_at: ago(0), broker: true, homebridge: true, bridge: { online: true, last_seen: ago(3) },
+  outlets: [{ id: "grow-lamp", name: "Grow lamp", on: true, at: ago(300) },
+            { id: "fan", name: "Fan", on: false, at: null },
+            { id: "heater", name: "Heater", on: null, at: null }],
+  covers: [], projectors: [], last_code: null, ...more,
+});
+
+const projector = (more = {}) => ({
+  id: "projector", name: "Projector", cover: "screen", on: true, app: "com.netflix.ninja", error: null,
+  closes_at: null, apps: [{ name: "Home", package: "home" }, { name: "Netflix", package: "com.netflix.ninja" }], ...more,
+});
+
+const cover = (more = {}) => ({ id: "screen", name: "Screen", position: 0, moving: null, target: 0, ...more });
+
+// Each test: its own page, the script run afresh on it, the clock and timers in hand
+async function open(t, s = status()) {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"], now: NOW });
+  const p = page(s);
+  await run();
+  p.tick = async (ms) => { t.mock.timers.tick(ms); await settle(); };
+  p.card = (kind, id) => p.$(`.${kind}[data-id="${id}"]`);
+  return p;
+}
+
+test("the signal path, the outlets and the time of the update", async (t) => {
+  const p = await open(t);
+  assert.match(p.text("#updated"), /^433 MHz ⇄ MQTT ⇄ HomeKit · updated /);
+  for (const n of ["homebridge", "broker", "bridge", "air"]) assert.ok(p.$(`[data-n="${n}"]`).classList.contains("up"), n);
+  for (const l of [0, 1, 2]) assert.ok(p.$(`[data-l="${l}"]`).classList.contains("up"));
+  const [lamp, fan, heater] = p.$("#outlets").querySelectorAll(".outlet");
+  assert.deepEqual([lamp, fan, heater].map((c) => c.dataset.id), ["grow-lamp", "fan", "heater"]);
+  assert.equal(p.text("h2", lamp), "Grow lamp");
+  assert.equal(p.text(".when", lamp), "On · 5 min ago");
+  assert.ok(lamp.classList.contains("on"));
+  assert.equal(p.$(".switch", lamp).getAttribute("aria-checked"), "true");
+  assert.equal(p.$(".switch", lamp).getAttribute("aria-label"), "Grow lamp: on");
+  assert.match(p.$(".bulb", lamp).innerHTML, /class="glass"/);
+  assert.equal(p.text(".when", fan), "Off");
+  assert.equal(p.$(".switch", fan).getAttribute("aria-checked"), "false");
+  assert.equal(p.text(".when", heater), "state unknown, press to switch");
+  assert.equal(p.$(".switch", heater).getAttribute("aria-checked"), "mixed");
+  assert.equal(p.$(".switch", heater).getAttribute("aria-label"), "Heater: off");
+  assert.equal(p.text("#last"), "no RF code yet");
+  assert.ok(p.$("#covers").hidden && p.$("#projectors").hidden && p.$("#cinema-label").hidden);
+});
+
+test("all down, no outlet", async (t) => {
+  const p = await open(t, status({ broker: false, homebridge: false, bridge: { online: false, last_seen: null }, outlets: [],
+                                   covers: undefined, projectors: undefined }));
+  for (const n of ["homebridge", "broker", "bridge", "air"]) assert.ok(!p.$(`[data-n="${n}"]`).classList.contains("up"));
+  for (const l of [0, 1, 2]) assert.ok(!p.$(`[data-l="${l}"]`).classList.contains("up"));
+  assert.equal(p.text("#outlets"), "No outlet yet: add one to outlets.toml.");
+});
+
+test("a link is up only when both of its ends are", async (t) => {
+  const p = await open(t, status({ homebridge: false, bridge: { online: false } }));
+  assert.deepEqual([0, 1, 2].map((l) => p.$(`[data-l="${l}"]`).classList.contains("up")), [false, false, false]);
+  p.status = status({ homebridge: true, broker: true, bridge: { online: false } });
+  await p.tick(5000);
+  assert.deepEqual([0, 1, 2].map((l) => p.$(`[data-l="${l}"]`).classList.contains("up")), [true, false, false]);
+});
+
+test("how long ago", async (t) => {
+  const p = await open(t, status({ outlets: [10, 90, 7200, 3 * 86400, -60].map((s, i) => ({ id: `o${i}`, name: `O${i}`, on: true, at: ago(s) })) }));
+  assert.deepEqual(p.$("#outlets").querySelectorAll(".when").map((w) => w.textContent),
+                   ["On · just now", "On · 2 min ago", "On · 2 h ago", "On · 3 d ago", "On · just now"]);
+});
+
+test("the last code, and a packet of light along the chain when a new one comes", async (t) => {
+  const p = await open(t, status({ last_code: { code: "1111", via: "sent", at: ago(0) } }));
+  assert.equal(p.text("#last"), "last code 1111 sent · just now");
+  assert.equal(p.$("#chain").querySelectorAll(".packet").length, 0);  // the first one is no news
+  await p.tick(5000);
+  assert.ok(!p.$("#last").classList.contains("fresh"));
+  p.status = status({ last_code: { code: "2222", via: "remote", at: ago(0) } });
+  await p.tick(5000);
+  assert.equal(p.text("#last"), "last code 2222 heard from a remote · just now");
+  assert.ok(p.$("#last").classList.contains("fresh"));
+  assert.equal(p.$("#chain").querySelectorAll(".packet").length, 0);  // gone once its animation finished
+  await p.tick(900);
+  assert.ok(!p.$("#last").classList.contains("fresh"));
+});
+
+test("the packet runs from the bridge to the broker for a code heard, the other way for one sent", async (t) => {
+  const p = await open(t, status({ last_code: { code: "1", via: "sent", at: ago(0) } }));
+  const made = [];
+  const create = p.document.createElement;
+  p.document.createElement = (tag) => { const e = create(tag); made.push(e); return e; };
+  p.status = status({ last_code: { code: "2", via: "remote", at: ago(0) } });
+  await p.tick(5000);
+  p.status = status({ last_code: { code: "3", via: "sent", at: ago(0) } });
+  await p.tick(5000);
+  const packets = made.filter((e) => e.classList.contains("packet"));
+  assert.deepEqual(packets.map((e) => [e.animations[0].frames[0].left, e.animations[0].frames[3].left]),
+                   [["320px", "120px"], ["120px", "320px"]]);
+  assert.deepEqual(packets[0].animations[0].options, { duration: 1100, easing: "ease-in-out" });
+});
+
+test("polls every 5 s, every second while something moves, and says when the hub does not answer", async (t) => {
+  const p = await open(t);
+  assert.equal(p.polls(), 1);
+  await p.tick(4999);
+  assert.equal(p.polls(), 1);
+  await p.tick(1);
+  assert.equal(p.polls(), 2);
+  p.status = status({ covers: [cover({ moving: "down", target: 100 })] });
+  await p.tick(5000);
+  await p.tick(1000);
+  assert.equal(p.polls(), 4);
+  p.status = 502;
+  await p.tick(1000);
+  assert.equal(p.text("#updated"), "the hub does not answer, retrying…");
+  await p.tick(1000);  // the last status still says it moves
+  assert.equal(p.polls(), 6);
+  p.answer = () => new Error("offline");
+  await p.tick(1000);
+  assert.equal(p.text("#updated"), "the hub does not answer, retrying…");
+});
+
+test("the hub down from the start: every 5 s", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"], now: NOW });
+  const p = page(503);
+  await run();
+  assert.equal(p.text("#updated"), "the hub does not answer, retrying…");
+  t.mock.timers.tick(1000);
+  await settle();
+  assert.equal(p.polls(), 1);
+  t.mock.timers.tick(4000);
+  await settle();
+  assert.equal(p.polls(), 2);
+});
+
+test("back to the page: a poll at once", async (t) => {
+  const p = await open(t);
+  p.document.hidden = true;
+  await p.fire("visibilitychange");
+  assert.equal(p.polls(), 1);
+  p.document.hidden = false;
+  await p.fire("visibilitychange");
+  await settle();
+  assert.equal(p.polls(), 2);
+});
+
+test("a switch sends the order, waits for the bridge's echo, and lights the bulb", async (t) => {
+  const p = await open(t);
+  const fan = p.card("outlet", "fan");
+  p.$(".switch", fan).click();
+  await settle();
+  assert.deepEqual(p.posted(), [["/api/outlets/fan", { on: true }]]);
+  assert.ok(fan.classList.contains("pending") && fan.classList.contains("on"));
+  assert.equal(p.text(".when", fan), "switching on…");
+  assert.equal(p.$("#chain").children.filter((c) => c.classList?.contains("packet")).length, 0);
+  p.$(".switch", fan).click();  // pressed again while it switches: nothing more
+  await settle();
+  assert.equal(p.posted().length, 1);
+  await p.tick(600);
+  assert.ok(fan.classList.contains("pending"));  // no echo yet
+  p.status.outlets[1] = { id: "fan", name: "Fan", on: true, at: new Date(Date.now()).toISOString() };
+  await p.tick(600);
+  assert.ok(!fan.classList.contains("pending") && fan.classList.contains("on"));
+  assert.ok(fan.classList.contains("burst"));
+  assert.equal(p.text(".when", fan), "On · just now");
+  await p.tick(6000);
+  assert.equal(p.text("#toast"), "");  // the echo came: no failure later
+});
+
+test("switching off shows it at once", async (t) => {
+  const p = await open(t);
+  const lamp = p.card("outlet", "grow-lamp");
+  p.$(".switch", lamp).click();
+  await settle();
+  assert.deepEqual(p.posted(), [["/api/outlets/grow-lamp", { on: false }]]);
+  assert.equal(p.text(".when", lamp), "switching off…");
+  assert.ok(!lamp.classList.contains("on"));
+  assert.equal(p.$(".switch", lamp).getAttribute("aria-label"), "Grow lamp: off");
+});
+
+test("an unknown outlet switches on", async (t) => {
+  const p = await open(t);
+  p.$(".switch", p.card("outlet", "heater")).click();
+  await settle();
+  assert.deepEqual(p.posted(), [["/api/outlets/heater", { on: true }]]);
+});
+
+test("no echo within 6 s: the switch flips back and says so", async (t) => {
+  const p = await open(t);
+  const fan = p.card("outlet", "fan");
+  p.$(".switch", fan).click();
+  await settle();
+  for (let i = 0; i < 10; i++) await p.tick(600);
+  await p.tick(1);
+  assert.equal(p.text("#toast"), "Fan: no answer from the RF bridge");
+  assert.ok(p.$("#toast").classList.contains("show"));
+  assert.ok(!fan.classList.contains("pending") && !fan.classList.contains("on"));
+  assert.ok(fan.classList.contains("failed"));
+  await p.tick(900);
+  assert.ok(!fan.classList.contains("failed"));
+  await p.tick(4000);
+  assert.ok(!p.$("#toast").classList.contains("show"));
+});
+
+test("the hub refuses the switch: its error, or its status", async (t) => {
+  const p = await open(t);
+  p.posts["/api/outlets/fan"] = { status: 503, body: { error: "the broker is not connected" } };
+  p.$(".switch", p.card("outlet", "fan")).click();
+  await settle();
+  assert.equal(p.text("#toast"), "Fan: the broker is not connected");
+  assert.ok(!p.card("outlet", "fan").classList.contains("pending"));
+  p.posts["/api/outlets/fan"] = 500;
+  p.$(".switch", p.card("outlet", "fan")).click();
+  await settle();
+  assert.equal(p.text("#toast"), "Fan: 500");
+});
+
+test("an outlet gone from the status when the switch fails keeps its card", async (t) => {
+  const p = await open(t);
+  p.posts["/api/outlets/fan"] = 500;
+  p.status.outlets = p.status.outlets.filter((o) => o.id !== "fan");
+  p.$(".switch", p.card("outlet", "fan")).click();
+  await settle();
+  assert.equal(p.text("#toast"), "Fan: 500");
+  assert.equal(p.text(".when", p.card("outlet", "fan")), "Off");
+});
+
+test("the projector's card: its apps, its screen button and its remote", async (t) => {
+  const p = await open(t, status({ projectors: [projector()], covers: [cover()] }));
+  const k = p.card("projector", "projector");
+  assert.ok(!p.$("#projectors").hidden && !p.$("#covers").hidden && !p.$("#cinema-label").hidden);
+  assert.match(p.$(".beamer", k).innerHTML, /class="lens"/);
+  assert.deepEqual(k.querySelectorAll(".apps button").map((b) => [b.textContent, b.dataset.package, b.className]),
+                   [["Home", "home", ""], ["Netflix", "com.netflix.ninja", "front"], ["📺 Screen", undefined, "screen-btn"]]);
+  const remote = k.querySelectorAll(".remote button");
+  assert.deepEqual(remote.map((b) => b.textContent),
+                   ["🔉", "▲", "🔊", "◀", "OK", "▶", "↩", "▼", "⌂", "🔇", "⏯", "⚙"]);
+  assert.equal(remote[4].className, "ok");
+  assert.equal(remote[10].title, "media play pause");
+  assert.equal(p.text(".when", k), "On · Netflix · the screen follows");
+  assert.ok(k.classList.contains("on") && !k.classList.contains("away"));
+  remote[1].click();
+  k.querySelectorAll(".apps button")[0].click();
+  await settle();
+  assert.deepEqual(p.posted(), [["/api/projectors/projector", { key: "DPAD_UP" }], ["/api/projectors/projector", { app: "home" }]]);
+  const polls = p.polls();
+  await p.tick(1500);
+  assert.equal(p.polls(), polls + 2);  // one for each order
+});
+
+test("the projector in every state", async (t) => {
+  const closes = new Date(NOW + 300000).toISOString();
+  const states = [
+    [{ on: null, error: "adb: offline" }, "unreachable · adb: offline"],
+    [{ on: null }, "unreachable"],
+    [{ app: "home" }, "On · Home · the screen follows"],
+    [{ app: "home", apps: [] }, "On · home · the screen follows"],
+    [{ app: "screensaver", cover: null }, "On · screensaver"],
+    [{ app: "org.other.app" }, "On · org.other.app · the screen follows"],
+    [{ app: null, cover: null }, "On"],
+    [{ on: false, app: null }, "Off"],
+  ];
+  const p = await open(t, status({ projectors: [projector()] }));
+  const k = p.card("projector", "projector");
+  for (const [more, said] of states) {
+    p.status = status({ projectors: [projector(more)] });
+    await p.tick(5000);
+    assert.equal(p.text(".when", k), said);
+    assert.equal(k.classList.contains("away"), more.on === null);
+    assert.equal(p.$(".switch", k).getAttribute("aria-checked"), more.on === null ? "mixed" : String(more.on ?? true));
+  }
+  p.status = status({ projectors: [projector({ on: false, app: null, closes_at: closes })] });
+  await p.tick(5000);
+  assert.match(p.text(".when", k), /^Off · the screen goes up at \d/);
+  assert.deepEqual(k.querySelectorAll(".apps button").map((b) => b.classList.contains("front")), [false, false, false]);
+});
+
+test("the projector's switch: turning on until it is, or for 20 s at most", async (t) => {
+  const p = await open(t, status({ projectors: [projector({ on: false, app: null })] }));
+  const k = p.card("projector", "projector");
+  p.$(".switch", k).click();
+  await settle();
+  assert.deepEqual(p.posted(), [["/api/projectors/projector", { on: true }]]);
+  assert.equal(p.text(".when", k), "turning on…");
+  assert.ok(k.classList.contains("on"));
+  p.$(".switch", k).click();  // changed my mind: it is off already, nothing to wait for
+  await settle();
+  assert.deepEqual(p.posted()[1], ["/api/projectors/projector", { on: false }]);
+  assert.equal(p.text(".when", k), "Off");
+  p.$(".switch", k).click();
+  await settle();
+  await p.tick(1500);  // a look once adb had the time, then every second while it is pending
+  assert.equal(p.text(".when", k), "turning on…");
+  p.status = status({ projectors: [projector()] });
+  await p.tick(1000);
+  assert.equal(p.text(".when", k), "On · Netflix · the screen follows");
+  p.$(".switch", k).click();  // off, and it never turns off
+  await settle();
+  assert.equal(p.text(".when", k), "turning off…");
+  await p.tick(19000);
+  assert.equal(p.text(".when", k), "turning off…");
+  await p.tick(1001);
+  assert.equal(p.text(".when", k), "On · Netflix · the screen follows");
+});
+
+test("the projector refuses an order: the card says it failed", async (t) => {
+  const p = await open(t, status({ projectors: [projector({ on: false, app: null })] }));
+  const k = p.card("projector", "projector");
+  p.posts["/api/projectors/projector"] = { status: 400, body: { error: "expected {\"on\": true}" } };
+  p.$(".switch", k).click();
+  await settle();
+  assert.equal(p.text("#toast"), 'projector: expected {"on": true}');
+  assert.ok(k.classList.contains("failed"));
+  await p.tick(5000);
+  assert.equal(p.text(".when", k), "Off");  // no longer pending
+  p.posts["/api/projectors/projector"] = 502;
+  k.querySelectorAll(".remote button")[0].click();
+  await settle();
+  assert.equal(p.text("#toast"), "projector: 502");
+  p.status = status({ projectors: [] });  // gone meanwhile
+  await p.tick(5000);
+  p.root.querySelector("#projectors").replaceChildren();
+  p.answer = (url, options) => (options.method === "POST" ? new Error("network down") : p.status);
+  await p.tick(5000);
+});
+
+test("the live screen: opens, closes, and says why there is no picture", async (t) => {
+  const p = await open(t, status({ projectors: [projector()] }));
+  const k = p.card("projector", "projector"), btn = p.$(".screen-btn", k);
+  btn.click();
+  const fig = p.$(".mirror", k), img = p.$("img", fig);
+  assert.equal(btn.getAttribute("aria-pressed"), "true");
+  assert.equal(img.src, `/api/projectors/projector/screen.mjpg?t=${NOW}`);
+  assert.equal(img.alt, "the projector's screen");
+  assert.equal(p.text("figcaption", fig), "connecting…");
+  await p.tick(1000);
+  assert.equal(p.text("figcaption", fig), "connecting…");  // no picture yet
+  img.naturalWidth = 1280;
+  img.naturalHeight = 720;
+  p.pixels = Array.from({ length: 16 * 9 * 4 }, (_, i) => (i % 4 === 3 ? 255 : 3));
+  await p.tick(1000);
+  assert.equal(p.text("figcaption", fig), "black screen: the app in front hides its picture (Netflix, Prime Video…)");
+  p.pixels[20] = 200;
+  await p.tick(1000);
+  assert.equal(p.$("figcaption", fig), null);
+  img.fire("error");
+  assert.equal(p.text("figcaption", fig), "no picture: the projector is off or unreachable");
+  btn.click();
+  assert.equal(p.$(".mirror", k), null);
+  assert.equal(btn.getAttribute("aria-pressed"), "false");
+  await p.tick(3000);  // its probe stopped with it
+});
+
+test("the probe of a closed screen stops", async (t) => {
+  const p = await open(t, status({ projectors: [projector()] }));
+  const k = p.card("projector", "projector"), btn = p.$(".screen-btn", k);
+  btn.click();
+  const img = p.$(".mirror img", k);
+  btn.click();
+  img.naturalWidth = 1280;
+  p.pixels = Array.from({ length: 16 * 9 * 4 }, () => 0);
+  await p.tick(1000);
+  assert.equal(p.$(".mirror", k), null);
+});
+
+test("a tap on the live screen lands where it was on the picture", async (t) => {
+  const p = await open(t, status({ projectors: [projector()] }));
+  const k = p.card("projector", "projector");
+  p.$(".screen-btn", k).click();
+  const img = p.$(".mirror img", k);
+  img.rect = { left: 10, top: 20, width: 1600, height: 900 };
+  img.click();  // no picture yet: taken as 16:9
+  img.fire("click", { clientX: 10 + 800, clientY: 20 + 450 });
+  img.naturalWidth = 900;
+  img.naturalHeight = 900;  // a square picture letterboxed in the 16:9 box: 350 px each side
+  img.fire("click", { clientX: 10 + 350, clientY: 20 + 900 });
+  img.fire("click", { clientX: 10 + 349, clientY: 20 + 450 });  // on the black bar
+  img.fire("click", { clientX: 10 + 1250, clientY: 20 + 901 });
+  await settle();
+  assert.deepEqual(p.posted().map(([, b]) => b), [{ tap: [0.5, 0.5] }, { tap: [0, 1] }]);
+});
+
+test("the live screen lets go while the page is hidden, and comes back with it", async (t) => {
+  const p = await open(t, status({ projectors: [projector(), projector({ id: "other", name: "Other" })] }));
+  const k = p.card("projector", "projector"), other = p.card("projector", "other");
+  p.$(".screen-btn", k).click();
+  p.document.hidden = true;
+  await p.fire("visibilitychange");
+  assert.equal(p.$(".mirror", k), null);
+  assert.equal(k.dataset.mirror, "1");
+  assert.equal(other.dataset.mirror, undefined);
+  p.document.hidden = false;
+  await p.fire("visibilitychange");
+  assert.ok(p.$(".mirror", k));
+  assert.equal(k.dataset.mirror, undefined);
+  assert.equal(p.$(".mirror", other), null);
+  assert.equal(p.$(".screen-btn", k).getAttribute("aria-pressed"), "true");
+});
+
+test("the screen's card: its buttons and its slider send the orders", async (t) => {
+  const p = await open(t, status({ covers: [cover()] }));
+  const k = p.card("cover", "screen");
+  const buttons = k.querySelectorAll("button");
+  assert.deepEqual(buttons.map((b) => [b.textContent, b.className]),
+                   [["▲ Close", ""], ["■", "stop"], ["▼ Open", ""], ["▲", ""], ["▼", ""], ["= rolled up", "declare"], ["= open", "declare"]]);
+  assert.equal(buttons[2].title, "down to the projection height");
+  assert.equal(p.text(".manual span", k), "Manual");
+  for (const b of buttons) b.click();
+  const range = p.$("input", k);
+  assert.deepEqual([range.type, range.min, range.max, range.step], ["range", 0, 100, 5]);
+  assert.equal(range.getAttribute("aria-label"), "Screen: position");
+  range.fire("pointerdown");
+  assert.equal(range.dragging, true);
+  range.value = "35";
+  range.fire("change");
+  assert.equal(range.dragging, false);
+  await settle();
+  assert.deepEqual(p.posted().map(([url, body]) => [url, JSON.stringify(body)]),
+                   [{ position: 0 }, { stop: true }, { position: 100 }, { press: "up" }, { press: "down" }, { declare: 0 },
+                    { declare: 100 }, { position: 35 }].map((b) => ["/api/covers/screen", JSON.stringify(b)]));
+  const polls = p.polls();
+  await p.tick(300);
+  assert.equal(p.polls(), polls + 8);  // one for each order
+});
+
+test("the screen in every state", async (t) => {
+  const states = [
+    [{ position: 0 }, "rolled up", "0", "0"],
+    [{ position: 100, target: 100 }, "open", "100", "100"],
+    [{ position: 40, target: 40 }, "40 %", "40", "40"],
+    [{ position: 20, moving: "down", target: 60 }, "opening… 20 % → 60 %", "20", "60"],
+    [{ position: 20, moving: "down", target: null }, "opening… 20 % → 100 %", "20", "0"],
+    [{ position: 70, moving: "up", target: null }, "closing… 70 % → 0 %", "70", "0"],
+    [{ position: null, moving: "up", target: 100 }, "all the way up, to start again from the top", "50", "100"],
+    [{ position: null, moving: "down", target: null }, "moving down, position unknown", "50", "0"],
+    [{ position: null, target: null }, "position unknown", "50", "0"],
+  ];
+  const p = await open(t, status({ covers: [cover()] }));
+  const k = p.card("cover", "screen"), screen = p.$(".screen", k);
+  for (const [more, said, pos, target] of states) {
+    p.status = status({ covers: [cover(more)] });
+    await p.tick(5000);
+    assert.equal(p.text(".when", k), said);
+    assert.deepEqual([screen.style.props["--p"], screen.style.props["--t"]], [pos, target]);
+    assert.equal(k.classList.contains("moving"), !!more.moving);
+    assert.equal(k.classList.contains("unknown"), more.position === null);
+  }
+});
+
+test("the slider follows the screen, unless it is in someone's hands", async (t) => {
+  const p = await open(t, status({ covers: [cover({ position: 30, target: 30 })] }));
+  const k = p.card("cover", "screen"), range = p.$("input", k);
+  assert.equal(range.value, 30);
+  p.status = status({ covers: [cover({ position: 30, target: null, moving: "down" })] });
+  await p.tick(5000);
+  assert.equal(range.value, 30);
+  p.status = status({ covers: [cover({ position: null, target: null })] });
+  await p.tick(1000);
+  assert.equal(range.value, 0);
+  range.fire("pointerdown");
+  p.status = status({ covers: [cover({ position: 80, target: 80 })] });
+  await p.tick(5000);
+  assert.equal(range.value, 0);
+  range.dragging = false;
+  p.document.activeElement = range;
+  await p.tick(5000);
+  assert.equal(range.value, 0);
+  p.document.activeElement = null;
+  await p.tick(5000);
+  assert.equal(range.value, 80);
+});
+
+test("the screen refuses an order: the card says it failed", async (t) => {
+  const p = await open(t, status({ covers: [cover()] }));
+  const k = p.card("cover", "screen");
+  p.posts["/api/covers/screen"] = { status: 503, body: { error: "the broker is not connected" } };
+  k.querySelectorAll("button")[0].click();
+  await settle();
+  assert.equal(p.text("#toast"), "screen: the broker is not connected");
+  assert.ok(k.classList.contains("failed"));
+  p.status = status({ covers: [] });
+  await p.tick(5000);
+  p.root.querySelector("#covers").replaceChildren();
+  p.posts["/api/covers/screen"] = 500;
+  k.querySelectorAll("button")[0].click();
+  await settle();
+  assert.equal(p.text("#toast"), "screen: 500");
+});
