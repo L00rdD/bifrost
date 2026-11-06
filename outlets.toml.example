@@ -7,7 +7,7 @@
 # Homebridge gets one accessory per outlet (make deploy). Find codes with make sniff.
 
 [[outlet]]
-id = "grow-lamp"          # used in topics and by Sapling Sunrise ([light] outlet)
+id = "grow-lamp"          # used in topics and by Mandrake ([light] outlet)
 name = "Grow lamp"        # shown in the Home app and on the home page card
 on = "1234567"            # the codes of the remote's ON and OFF buttons
 off = "1234568"

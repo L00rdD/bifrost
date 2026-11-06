@@ -118,7 +118,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       }
       rfSender.send(code, 24); // Send RF code with 24-bit length
       // Echo it on 433/receive, the topic Homebridge and the status card follow: whoever sends a
-      // code (Home app, Sapling Sunrise, mosquitto_pub), everyone sees the new state. The receiver
+      // code (Home app, Mandrake, mosquitto_pub), everyone sees the new state. The receiver
       // hears our own transmission too; marking it as just received keeps that from a second report.
       char echo[16];
       snprintf(echo, sizeof(echo), "%lu", code);

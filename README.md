@@ -4,17 +4,17 @@
 
 The bridge between the worlds of the house: 433 MHz radio, MQTT and HomeKit.
 It runs on the Pi next to d-mediaserver and controls the RF outlets (first one:
-the Sapling Sunrise grow lamp) from the iPhone Home app, Siri, or anything that
+the Mandrake grow lamp) from the iPhone Home app, Siri, or anything that
 speaks MQTT.
 
 ```
 iPhone (Home, Siri) ⇄ Homebridge :8581 ⇄ Mosquitto :1883 ⇄ hub ⇄ RF bridge (ESP8266) ⇄ 433 MHz ⇄ outlets
-                       Sapling Sunrise ⇄ ┘
+                              Mandrake ⇄ ┘
 ```
 
 The RF codes live in **`outlets.toml`** only, which is not committed: anyone in radio
 range could switch the outlets with them (copy `outlets.toml.example`). Everything
-else (Homebridge, Sapling Sunrise, the home page card) knows an outlet by its `id`
+else (Homebridge, Mandrake, the home page card) knows an outlet by its `id`
 and talks to the hub:
 
 | Topic | Payload | |
