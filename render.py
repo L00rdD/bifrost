@@ -39,15 +39,17 @@ def cover_buttons(cover):
     """The dashboard's buttons as switches of one accessory. Fermer, Stop, Ouvrir and the two "it
     really is there" are pushed and come back off, sending nothing (no offValue). Monter and Descendre, as
     on the remote, stay on while the screen moves that way; off is the stop, and the hub sends its
-    own after the measured time at the latest."""
+    own after the measured time at the latest. Each shows its own name inside the accessory's tile
+    (nameOverride: without it, the Home app calls them all by the accessory's name)."""
     base = f"bifrost/cover/{cover['id']}"
 
     def push(label, order, value):
-        return {"type": "switch", "name": f"{cover['name']} {label}", "topics": {"setOn": f"{base}/{order}"},
+        return {"type": "switch", "name": f"{cover['name']} {label}", "nameOverride": label,
+                "topics": {"setOn": f"{base}/{order}"},
                 "onValue": value, "turnOffAfterms": 1000}
 
     def hold(label, key, moving):
-        return {"type": "switch", "name": f"{cover['name']} {label}", "onValue": key, "offValue": "STOP",
+        return {"type": "switch", "name": f"{cover['name']} {label}", "nameOverride": label, "onValue": key, "offValue": "STOP",
                 "topics": {"setOn": f"{base}/press",
                            "getOn": {"topic": f"{base}/state", "apply": f"return message == '{moving}' ? '{key}' : 'STOP';"}}}
 

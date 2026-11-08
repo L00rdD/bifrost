@@ -43,6 +43,9 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(list(buttons), ["Screen Fermer", "Screen Stop", "Screen Ouvrir", "Screen Monter", "Screen Descendre",
                                          "Screen Est enroulé", "Screen Est ouvert"])
         self.assertTrue(all(s["type"] == "switch" for s in screen["services"]))
+        # in the tile, each under its own name rather than the accessory's
+        self.assertEqual([s["nameOverride"] for s in screen["services"]],
+                         ["Fermer", "Stop", "Ouvrir", "Monter", "Descendre", "Est enroulé", "Est ouvert"])
         self.assertNotIn("5553", json.dumps(config))
 
     def test_pushed_buttons_come_back_off_sending_nothing(self):
