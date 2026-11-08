@@ -13,7 +13,8 @@
       --bg: var(--t-bg, #0b1020); --card: var(--t-surface, #121a33); --text: var(--t-text, #e6ecff); --muted: var(--t-muted, #8e9bc4);
       --line: var(--t-line, #24304f); --accent: var(--t-accent, #6fe3ff); --gold: var(--t-highlight, #ffc857);
       --up: var(--t-up, #7dffb3); --down: var(--t-down, #ff6b6b);
-      --rainbow: #ff6b6b, #ffc857, #7dffb3, #6fe3ff, #9b8cff;
+      --sail: #ffc857, #ff6b6b;   /* the longship's hull and sail: what is lit, chosen or in front */
+      --sea: #6fe3ff;              /* the radio waves it rides */
     }
     /* Hogwarts' highlight is Gryffindor scarlet: a lamp lit in red reads as a fault, so it burns candle gold */
     :root[data-theme="hogwarts"] { --gold: var(--t-accent); }
@@ -21,18 +22,28 @@
     body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); font: 16px/1.5 var(--t-font-body, system-ui, sans-serif); overflow-x: hidden; }
     main { position: relative; max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; display: grid; gap: 16px; }
 
-    /* the aurora: the rainbow bridge, drifting slowly behind everything */
-    .aurora { position: fixed; inset: -20vh -20vw auto; height: 70vh; pointer-events: none; z-index: 0; opacity: 0.22; filter: blur(70px);
-      background: conic-gradient(from 180deg at 50% 100%, var(--rainbow), #ff6b6b); border-radius: 0 0 50% 50%; animation: drift 24s ease-in-out infinite alternate; }
-    [data-theme] .aurora { opacity: 0.1; }
-    @keyframes drift { from { transform: translateX(-6vw) rotate(-4deg); } to { transform: translateX(6vw) rotate(4deg); } }
+    /* the sea: the swell of radio waves the longship rides, rolling along the bottom of the page */
+    .sea { position: fixed; left: 0; right: 0; bottom: 0; height: 72px; pointer-events: none; z-index: 0; overflow: hidden;
+      mask-image: linear-gradient(transparent, #000 60%); }
+    .sea::before, .sea::after { content: ""; position: absolute; left: 0; right: 0; height: 24px; background-repeat: repeat-x; background-size: 48px 24px;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 24'%3E%3Cpath d='M-12 12 Q0 0 12 12 T36 12 T60 12' fill='none' stroke='%236fe3ff' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E"); }
+    .sea::before { bottom: 26px; opacity: 0.28; animation: swell-x 6s linear infinite; }
+    .sea::after { bottom: 6px; opacity: 0.14; animation: swell-x 9s linear infinite reverse; }
+    [data-theme] .sea { opacity: 0.5; }
+    @keyframes swell-x { to { background-position: 48px 0; } }
     main > * { position: relative; z-index: 1; }
 
-    /* header: the logo's waves leave the transmitter one after the other */
+    /* header: the longship rides the swell of the radio waves */
     h1 { margin: 0 0 4px; font-size: 1.5rem; display: flex; align-items: center; gap: 12px; }
-    h1 svg { width: 48px; height: 48px; overflow: visible; }
-    h1 .wave { animation: beam 2.6s ease-in-out infinite; }
-    h1 .w2 { animation-delay: 0.15s; } h1 .w3 { animation-delay: 0.3s; } h1 .w4 { animation-delay: 0.45s; } h1 .w5 { animation-delay: 0.6s; }
+    h1 svg { width: 52px; height: 52px; overflow: visible; }
+    h1 .boat { transform-origin: 80px 100px; animation: bob 3.2s ease-in-out infinite; }
+    h1 .sea { animation: swell 3.2s ease-in-out infinite; }
+    h1 .s2 { animation-delay: 0.5s; }
+    @keyframes bob { 0%, 100% { transform: translateY(0) rotate(-2deg); } 50% { transform: translateY(-3px) rotate(2deg); } }
+    @keyframes swell { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(-8px); } }
+    /* a code sent or heard: the ship surges over a wave */
+    h1.sailing .boat { animation: surge 0.9s ease-in-out; }
+    @keyframes surge { 30% { transform: translateY(-7px) rotate(-7deg); } 70% { transform: translateY(2px) rotate(4deg); } }
     @keyframes beam { 0%, 100% { opacity: 0.35; } 30% { opacity: 1; } }
     .sub { color: var(--muted); font-size: 0.85rem; }
     [data-theme] h1 { font-family: var(--t-font-display); letter-spacing: 0.08em; text-transform: uppercase; }
@@ -49,9 +60,9 @@
     .outlet.on { border-color: color-mix(in srgb, var(--gold) 55%, var(--line)); box-shadow: 0 0 28px -8px var(--gold); }
     [data-theme] .outlet h2 { font-family: var(--t-font-display); letter-spacing: 0.06em; text-transform: uppercase; color: var(--t-accent); }
 
-    /* a rainbow streak crosses the card when a switch is confirmed */
+    /* a crest of the sail's colours crosses the card when a switch is confirmed */
     .outlet::after { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0;
-      background: linear-gradient(100deg, transparent 30%, #ff6b6b55, #ffc85755, #7dffb355, #6fe3ff55, #9b8cff55, transparent 70%);
+      background: linear-gradient(100deg, transparent 30%, #ffc85755, #ff6b6b55, #6fe3ff55, transparent 70%);
       transform: translateX(-100%); }
     .outlet.burst::after { animation: streak 0.9s ease-out; }
     @keyframes streak { 0% { opacity: 1; transform: translateX(-100%); } 100% { opacity: 0; transform: translateX(100%); } }
@@ -83,8 +94,6 @@
     .editor button:focus-visible, .editor select:focus-visible, .editor input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     @keyframes shake { 20%, 60% { transform: translateX(-6px); } 40%, 80% { transform: translateX(6px); } }
 
-    @keyframes shake { 20%, 60% { transform: translateX(-6px); } 40%, 80% { transform: translateX(6px); } }
-
     /* the bulb, and the radio waves it sends while a code is on its way */
     .bulb { position: relative; width: 56px; height: 56px; display: grid; place-items: center; }
     .bulb svg { width: 44px; height: 44px; overflow: visible; transition: transform 0.3s; }
@@ -98,22 +107,22 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     @keyframes pop { 40% { transform: scale(1.25); } }
     .ring { position: absolute; inset: 4px; border-radius: 50%; border: 2px solid; opacity: 0; pointer-events: none; }
-    .ring:nth-child(1) { border-color: #6fe3ff; } .ring:nth-child(2) { border-color: #7dffb3; animation-delay: 0.3s !important; } .ring:nth-child(3) { border-color: #9b8cff; animation-delay: 0.6s !important; }
+    .ring:nth-child(1) { border-color: #6fe3ff; } .ring:nth-child(2) { border-color: #e6ecff; animation-delay: 0.3s !important; } .ring:nth-child(3) { border-color: #ffc857; animation-delay: 0.6s !important; }
     .pending .ring { animation: ripple 1.2s ease-out infinite; }
     @keyframes ripple { from { opacity: 0.9; transform: scale(0.7); } to { opacity: 0; transform: scale(2); } }
 
-    /* the switch: a rainbow when on, shimmering while it waits for the outlet */
+    /* the switch: the sail's colours when on, shimmering while it waits for the outlet */
     .switch { position: relative; width: 66px; height: 36px; padding: 0; border-radius: 99px; cursor: pointer;
       border: 1px solid var(--line); background: color-mix(in srgb, var(--line) 70%, transparent); transition: background 0.35s, box-shadow 0.35s; }
     .switch .knob { position: absolute; top: 3px; left: 3px; width: 28px; height: 28px; border-radius: 50%; background: var(--text);
       box-shadow: 0 2px 6px #0008; transition: left 0.35s cubic-bezier(0.5, 1.6, 0.4, 0.8), transform 0.2s; }
-    .switch[aria-checked="true"] { background: linear-gradient(90deg, var(--rainbow)); background-size: 200% 100%; box-shadow: 0 0 16px -2px #6fe3ff99; }
+    .switch[aria-checked="true"] { background: linear-gradient(90deg, var(--sail)); background-size: 200% 100%; box-shadow: 0 0 16px -2px #ffc85799; }
     .switch[aria-checked="true"] .knob { left: 33px; }
     .switch[aria-checked="mixed"] .knob { left: 18px; opacity: 0.6; }
     .switch:active .knob { transform: scaleX(1.15); }
     .switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
     .pending .switch { background: linear-gradient(90deg, var(--line), #6fe3ff66, var(--line)); background-size: 200% 100%; animation: shimmer 1s linear infinite; }
-    .pending .switch[aria-checked="true"] { background: linear-gradient(90deg, var(--rainbow), #ff6b6b); background-size: 200% 100%; }
+    .pending .switch[aria-checked="true"] { background: linear-gradient(90deg, var(--sail), #ffc857); background-size: 200% 100%; }
     @keyframes shimmer { to { background-position: -200% 0; } }
 
     /* ---------- covers: the projection screen, drawn at the position the hub reckons ---------- */
@@ -131,10 +140,9 @@
       background: linear-gradient(#f2f4ff, #cfd6f2); border-bottom: 4px solid #8e9bc4; border-radius: 0 0 3px 3px;
       transition: height 1s linear; box-shadow: 0 6px 18px -6px #000a; }
     .cover.unknown .screen .cloth { background: repeating-linear-gradient(135deg, #cfd6f233 0 8px, transparent 8px 16px); border-bottom-style: dashed; }
-    /* the picture on the screen: the rainbow bridge, brighter as the screen comes down */
+    /* the picture on the screen: the longship at sea, brighter as the screen comes down */
     .screen .cloth::before { content: ""; position: absolute; inset: 8px 8px auto; height: 106px; border-radius: 4px; opacity: calc(var(--p) / 140);
-      background: radial-gradient(ellipse at 50% 120%, transparent 38%, #ff6b6b 39% 44%, #ffc857 45% 50%, #7dffb3 51% 56%, #6fe3ff 57% 62%, #9b8cff 63% 68%, transparent 69%),
-                  linear-gradient(#0b1020, #1d2850); transition: opacity 1s linear; }
+      background: url("bifrost.svg") center 58% / 62% no-repeat, linear-gradient(#0b1020, #1d2850); transition: opacity 1s linear; }
     .screen .mark { position: absolute; left: 2px; right: 2px; top: calc(9px + var(--t) * 1.32px); border-top: 2px dashed var(--accent); opacity: 0;
       transition: opacity 0.3s; pointer-events: none; }
     .moving .screen .mark { opacity: 0.8; }
@@ -175,7 +183,7 @@
     .apps button { height: 30px; padding: 0 10px; border-radius: 99px; cursor: pointer; font: inherit; font-size: 0.8rem; color: var(--text);
       background: color-mix(in srgb, var(--line) 70%, transparent); border: 1px solid var(--line); transition: border-color 0.2s, background 0.2s; }
     .apps button:hover { border-color: var(--accent); }
-    .apps button.front { background: linear-gradient(90deg, var(--rainbow)); color: #0b1020; border-color: transparent; font-weight: 600; }
+    .apps button.front { background: linear-gradient(90deg, var(--sail)); color: #0b1020; border-color: transparent; font-weight: 600; }
     .remote { display: grid; grid-template-columns: repeat(3, 34px); grid-auto-rows: 34px; gap: 4px; }
     .remote button { padding: 0; border-radius: 9px; cursor: pointer; font-size: 0.85rem; color: var(--text);
       background: color-mix(in srgb, var(--line) 70%, transparent); border: 1px solid var(--line); }
@@ -195,7 +203,9 @@
     /* ---------- the chain: Homebridge, broker, RF bridge, the air ---------- */
     .chain { display: flex; align-items: center; gap: 0; position: relative; }
     .node { flex: none; display: grid; justify-items: center; gap: 6px; width: 84px; text-align: center; font-size: 0.78rem; color: var(--muted); }
-    .node .dot { position: relative; width: 14px; height: 14px; border-radius: 50%; background: var(--down); }
+    /* each node is a shield on the longship's side: its boss shows through */
+    .node .dot { position: relative; width: 16px; height: 16px; border-radius: 50%; background: var(--down); }
+    .node .dot::before { content: ""; position: absolute; inset: 5px; border-radius: 50%; background: var(--card); z-index: 1; }
     .node.up .dot { background: var(--up); }
     .node.up .dot::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--up); animation: ping 2.4s ease-out infinite; }
     @keyframes ping { from { opacity: 0.7; transform: scale(1); } to { opacity: 0; transform: scale(2.6); } }
@@ -203,8 +213,9 @@
     .link { flex: 1; height: 3px; margin-bottom: 26px; border-radius: 3px; background: var(--line); position: relative; overflow: hidden; }
     .link.up { background: repeating-linear-gradient(90deg, var(--accent) 0 8px, transparent 8px 16px); background-size: 32px 3px; animation: flow 1.6s linear infinite; opacity: 0.55; }
     @keyframes flow { to { background-position: 32px 0; } }
-    .packet { position: absolute; top: 4px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: #fff; pointer-events: none;
-      box-shadow: 0 0 8px #fff, 0 0 18px #6fe3ff, 0 0 30px #9b8cff; }
+    /* a lantern crosses the chain for each code: towards the air when sent, back when heard */
+    .packet { position: absolute; top: 3px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: #fff; pointer-events: none;
+      box-shadow: 0 0 8px #fff, 0 0 18px #ffc857, 0 0 30px #6fe3ff; }
     .air { display: flex; gap: 3px; height: 14px; align-items: center; }
     .air i { width: 6px; height: 14px; border: 2px solid var(--muted); border-left: 0; border-radius: 0 14px 14px 0; opacity: 0.4; }
     .node.up .air i { border-color: var(--up); animation: beam 1.8s ease-in-out infinite; }
@@ -222,19 +233,34 @@
   </style>
 </head>
 <body class="t-app">
-  <div class="aurora"></div>
+  <div class="sea" aria-hidden="true"></div>
   <main>
     <header>
       <h1 class="t-title">
         <svg viewBox="0 0 160 160" aria-hidden="true">
-          <g fill="none" stroke-width="8" stroke-linecap="round">
-            <path class="wave w1" d="M60 110 A20 20 0 0 1 100 110" stroke="#9b8cff"/>
-            <path class="wave w2" d="M48 110 A32 32 0 0 1 112 110" stroke="#6fe3ff"/>
-            <path class="wave w3" d="M36 110 A44 44 0 0 1 124 110" stroke="#7dffb3"/>
-            <path class="wave w4" d="M24 110 A56 56 0 0 1 136 110" stroke="#ffc857"/>
-            <path class="wave w5" d="M12 110 A68 68 0 0 1 148 110" stroke="#ff6b6b"/>
-          </g>
-          <circle cx="80" cy="110" r="7" fill="#fff"/>
+        <g class="boat">
+        <!-- mast and the striped sail -->
+        <line x1="78" y1="30" x2="78" y2="100" stroke="#e6ecff" stroke-width="4" stroke-linecap="round"/>
+        <path d="M50 36 L106 36 Q 113 65 106 92 L50 92 Q 43 65 50 36 Z" fill="#ff6b6b"/>
+        <path d="M64 36 Q 59 64 64 92 L78 92 Q 73 64 78 36 Z M92 36 Q 87 64 92 92 L106 92 Q 101 64 106 36 Z" fill="#fff" opacity="0.9"/>
+        <line x1="48" y1="36" x2="108" y2="36" stroke="#e6ecff" stroke-width="4" stroke-linecap="round"/>
+        <!-- the hull, its stern curled up at the left, the dragon's neck at the right -->
+        <path d="M22 96 Q 80 120 138 96 L142 72 Q 146 64 140 62 Q 134 84 130 94 L30 94 Q 24 78 26 66 Q 16 68 18 80 Z" fill="#ffc857" stroke="#e8a93a" stroke-width="3" stroke-linejoin="round"/>
+        <path d="M26 66 Q 22 56 30 52 Q 34 62 30 70 Z" fill="#ffc857" stroke="#e8a93a" stroke-width="3" stroke-linejoin="round"/>
+        <!-- the dragon's head -->
+        <path d="M138 66 Q 136 50 148 46 L158 50 L150 54 L154 60 Q 150 68 138 66 Z" fill="#ffc857" stroke="#e8a93a" stroke-width="3" stroke-linejoin="round"/>
+        <circle cx="146" cy="53" r="2.2" fill="#0b1020"/>
+        <!-- the shields along the side -->
+        <g fill="#6fe3ff" stroke="#0b1020" stroke-width="2">
+        <circle cx="44" cy="99" r="6"/><circle cx="62" cy="102" r="6"/><circle cx="80" cy="103" r="6"/><circle cx="98" cy="102" r="6"/><circle cx="116" cy="99" r="6"/>
+        </g>
+        <g fill="#0b1020"><circle cx="44" cy="99" r="1.8"/><circle cx="62" cy="102" r="1.8"/><circle cx="80" cy="103" r="1.8"/><circle cx="98" cy="102" r="1.8"/><circle cx="116" cy="99" r="1.8"/></g>
+        </g>
+        <!-- the sea: radio waves -->
+        <g fill="none" stroke="#6fe3ff" stroke-width="6" stroke-linecap="round">
+        <path class="sea s1" d="M8 122 Q 20 110 32 122 T 56 122 T 80 122 T 104 122 T 128 122 T 152 122"/>
+        <path class="sea s2" d="M8 140 Q 20 128 32 140 T 56 140 T 80 140 T 104 140 T 128 140 T 152 140" opacity="0.5"/>
+        </g>
         </svg>
         Bifrost
       </h1>

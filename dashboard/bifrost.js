@@ -164,7 +164,7 @@ async function saveSchedule(c, id, rules) {
 
 const BEAMER = `<svg viewBox="0 0 150 96" aria-hidden="true">
       <defs><linearGradient id="cone" x1="0" x2="1"><stop offset="0" stop-color="#e6ecff" stop-opacity="0.75"/>
-        <stop offset="0.5" stop-color="#6fe3ff" stop-opacity="0.35"/><stop offset="1" stop-color="#9b8cff" stop-opacity="0"/></linearGradient></defs>
+        <stop offset="0.5" stop-color="#ffc857" stop-opacity="0.35"/><stop offset="1" stop-color="#6fe3ff" stop-opacity="0"/></linearGradient></defs>
       <path class="cone" d="M52 52 L150 8 L150 92 Z" fill="url(#cone)"/>
       <rect class="body" x="4" y="34" width="58" height="40" rx="12"/>
       <circle class="lens" cx="46" cy="54" r="11"/><circle class="led" cx="16" cy="64" r="3"/>
@@ -379,8 +379,11 @@ function flash(c, cls) {
   setTimeout(() => c.classList.remove(cls), 900);
 }
 
-// A packet of light runs along the chain: towards the air for a code sent, back for one heard
+// A lantern runs along the chain: towards the air for a code sent, back for one heard; the
+// longship in the header surges over a wave
 function sendPacket(outward) {
+  const h1 = $("h1");
+  if (h1) flash(h1, "sailing");
   const chain = $("#chain"), nodes = [...chain.querySelectorAll(".node")];
   const x = (n) => n.offsetLeft + n.offsetWidth / 2;
   const [from, to] = outward ? [x(nodes[1]), x(nodes[3])] : [x(nodes[3]), x(nodes[1])];

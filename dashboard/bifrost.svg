@@ -1,27 +1,25 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" width="160" height="160" role="img" aria-label="Bifrost: a rainbow bridge made of radio waves, rising from a transmitter between two shores">
-  <defs>
-    <radialGradient id="spark" cx="0.5" cy="0.5" r="0.5">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="0.55" stop-color="#d9f6ff"/>
-      <stop offset="1" stop-color="#6fe3ff" stop-opacity="0"/>
-    </radialGradient>
-  </defs>
-  <!-- the bridge: radio waves in the colours of the rainbow -->
-  <g fill="none" stroke-width="8" stroke-linecap="round">
-    <path class="wave w1" d="M60 110 A20 20 0 0 1 100 110" stroke="#9b8cff"/>
-    <path class="wave w2" d="M48 110 A32 32 0 0 1 112 110" stroke="#6fe3ff"/>
-    <path class="wave w3" d="M36 110 A44 44 0 0 1 124 110" stroke="#7dffb3"/>
-    <path class="wave w4" d="M24 110 A56 56 0 0 1 136 110" stroke="#ffc857"/>
-    <path class="wave w5" d="M12 110 A68 68 0 0 1 148 110" stroke="#ff6b6b"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" width="160" height="160" role="img" aria-label="Bifrost: a longship riding radio waves">
+  <g class="boat">
+    <!-- mast and the striped sail -->
+    <line x1="78" y1="30" x2="78" y2="100" stroke="#e6ecff" stroke-width="4" stroke-linecap="round"/>
+    <path d="M50 36 L106 36 Q 113 65 106 92 L50 92 Q 43 65 50 36 Z" fill="#ff6b6b"/>
+    <path d="M64 36 Q 59 64 64 92 L78 92 Q 73 64 78 36 Z M92 36 Q 87 64 92 92 L106 92 Q 101 64 106 36 Z" fill="#fff" opacity="0.9"/>
+    <line x1="48" y1="36" x2="108" y2="36" stroke="#e6ecff" stroke-width="4" stroke-linecap="round"/>
+    <!-- the hull, its stern curled up at the left, the dragon's neck at the right -->
+    <path d="M22 96 Q 80 120 138 96 L142 72 Q 146 64 140 62 Q 134 84 130 94 L30 94 Q 24 78 26 66 Q 16 68 18 80 Z" fill="#ffc857" stroke="#e8a93a" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M26 66 Q 22 56 30 52 Q 34 62 30 70 Z" fill="#ffc857" stroke="#e8a93a" stroke-width="3" stroke-linejoin="round"/>
+    <!-- the dragon's head -->
+    <path d="M138 66 Q 136 50 148 46 L158 50 L150 54 L154 60 Q 150 68 138 66 Z" fill="#ffc857" stroke="#e8a93a" stroke-width="3" stroke-linejoin="round"/>
+    <circle cx="146" cy="53" r="2.2" fill="#0b1020"/>
+    <!-- the shields along the side -->
+    <g fill="#6fe3ff" stroke="#0b1020" stroke-width="2">
+      <circle cx="44" cy="99" r="6"/><circle cx="62" cy="102" r="6"/><circle cx="80" cy="103" r="6"/><circle cx="98" cy="102" r="6"/><circle cx="116" cy="99" r="6"/>
+    </g>
+    <g fill="#0b1020"><circle cx="44" cy="99" r="1.8"/><circle cx="62" cy="102" r="1.8"/><circle cx="80" cy="103" r="1.8"/><circle cx="98" cy="102" r="1.8"/><circle cx="116" cy="99" r="1.8"/></g>
   </g>
-  <!-- the transmitter it rises from -->
-  <circle cx="80" cy="110" r="13" fill="url(#spark)"/>
-  <circle cx="80" cy="110" r="5" fill="#ffffff"/>
-  <!-- the two shores it joins -->
-  <g stroke="#7fa9b8" stroke-width="5" stroke-linecap="round">
-    <line x1="6" y1="126" x2="46" y2="126"/>
-    <line x1="114" y1="126" x2="154" y2="126"/>
-    <line x1="18" y1="140" x2="40" y2="140"/>
-    <line x1="120" y1="140" x2="142" y2="140"/>
+  <!-- the sea: radio waves -->
+  <g fill="none" stroke="#6fe3ff" stroke-width="6" stroke-linecap="round">
+    <path class="sea s1" d="M8 122 Q 20 110 32 122 T 56 122 T 80 122 T 104 122 T 128 122 T 152 122"/>
+    <path class="sea s2" d="M8 140 Q 20 128 32 140 T 56 140 T 80 140 T 104 140 T 128 140 T 152 140" opacity="0.5"/>
   </g>
 </svg>
