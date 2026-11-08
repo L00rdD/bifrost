@@ -56,6 +56,33 @@
     .outlet.burst::after { animation: streak 0.9s ease-out; }
     @keyframes streak { 0% { opacity: 1; transform: translateX(-100%); } 100% { opacity: 0; transform: translateX(100%); } }
     .outlet.failed, .cover.failed, .projector.failed { animation: shake 0.45s; }
+
+    /* the schedule: a line under the state, which opens the editor across the card */
+    .outlet .plan { display: block; margin: 4px 0 0; padding: 0; border: 0; background: none; color: var(--muted); font: inherit; font-size: 0.8rem;
+      cursor: pointer; text-align: left; transition: color 0.2s; }
+    .outlet .plan:hover, .outlet .plan[aria-expanded="true"] { color: var(--accent); }
+    .outlet .plan:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+    .editor { grid-column: 1 / -1; display: grid; gap: 10px; padding-top: 12px; border-top: 1px dashed var(--line); font-size: 0.85rem; }
+    .editor .hint, .editor .empty { margin: 0; color: var(--muted); font-size: 0.8rem; text-align: left; }
+    .editor .rules { display: grid; gap: 8px; }
+    .editor .rule { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .editor select, .editor input[type="time"] { height: 32px; padding: 0 8px; border-radius: 8px; color: var(--text); font: inherit; font-size: 0.85rem;
+      background: color-mix(in srgb, var(--line) 70%, transparent); border: 1px solid var(--line); color-scheme: dark; }
+    .editor .days { display: flex; gap: 3px; }
+    .editor .day { width: 30px; height: 28px; padding: 0; border-radius: 7px; cursor: pointer; font: inherit; font-size: 0.7rem; color: var(--muted);
+      background: transparent; border: 1px solid var(--line); transition: background 0.2s, color 0.2s; }
+    .editor .day[aria-pressed="true"] { color: #0b1020; background: var(--accent); border-color: transparent; font-weight: 600; }
+    .editor .del { margin-left: auto; width: 28px; height: 28px; padding: 0; border-radius: 50%; cursor: pointer; color: var(--muted);
+      background: transparent; border: 1px solid var(--line); }
+    .editor .del:hover { color: var(--down); border-color: var(--down); }
+    .editor .actions { display: flex; gap: 8px; }
+    .editor .actions button { height: 32px; padding: 0 12px; border-radius: 8px; cursor: pointer; font: inherit; font-size: 0.85rem; color: var(--text);
+      background: color-mix(in srgb, var(--line) 70%, transparent); border: 1px solid var(--line); transition: border-color 0.2s; }
+    .editor .actions button:hover { border-color: var(--accent); }
+    .editor .actions .save { margin-left: auto; background: linear-gradient(90deg, var(--sail)); color: #0b1020; border-color: transparent; font-weight: 600; }
+    .editor button:focus-visible, .editor select:focus-visible, .editor input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    @keyframes shake { 20%, 60% { transform: translateX(-6px); } 40%, 80% { transform: translateX(6px); } }
+
     @keyframes shake { 20%, 60% { transform: translateX(-6px); } 40%, 80% { transform: translateX(6px); } }
 
     /* the bulb, and the radio waves it sends while a code is on its way */

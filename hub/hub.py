@@ -6,6 +6,8 @@ status of the whole thing for the d-mediaserver home page.
   :8582/                               -> the dashboard (dashboard/)
   :8582/api/status.json                -> broker, Homebridge, RF bridge, outlets (CORS open)
   POST :8582/api/outlets/<id>          -> {"on": true} switches the outlet, as /set does
+  PUT  :8582/api/outlets/<id>/schedule -> [{"at": "08:30", "on": true, "days": [1-7]}, ...]: the outlet's
+                                          schedule, kept in SCHEDULES_FILE and applied by the hub
 
   bifrost/cover/<id>/set     0-100 / OPEN / CLOSE / STOP -> moves the cover (0 = up, 100 = open)
   bifrost/cover/<id>/press   up / down / stop -> the button as on the remote; stop comes by itself
@@ -24,6 +26,11 @@ status of the whole thing for the d-mediaserver home page.
 
 The codes live in outlets.toml only. 433/receive carries both the remote's presses and
 every code the bridge sends, so the state follows whoever switched the outlet.
+
+A schedule is a few rules per outlet, set from the dashboard: on or off at a time of day, on the
+days of the week given (1 = Monday). Every 10 s the hub looks for the rule in force, the latest
+one that fell within the last 24 h, and applies it once: at its time, or as soon as the hub is
+back when it missed it. Switched by hand afterwards, the outlet stays so until the next rule.
 
 A cover (the projection screen) does not say where it is either: the hub sends up or down,
 then stop when the time measured for that distance is over, and follows the remote's
@@ -66,7 +73,7 @@ import subprocess
 import threading
 import time
 import tomllib
-from datetime import datetime
+from datetime import datetime, time as daytime, timedelta
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -80,6 +87,11 @@ CONFIG = tomllib.loads(Path(os.environ.get("OUTLETS_FILE", "/app/outlets.toml"))
 OUTLETS, COVERS = CONFIG.get("outlet", []), CONFIG.get("cover", [])
 BY_ID = {o["id"]: o for o in OUTLETS}
 BY_CODE = {str(o[k]): (o["id"], k == "on") for o in OUTLETS for k in ("on", "off")}
+SCHEDULES_FILE = Path(os.environ.get("SCHEDULES_FILE", "/data/schedules.json"))  # the outlets' schedules, set from the dashboard
+TIME_RE = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
+MAX_RULES = 20       # per outlet
+SCHEDULE_TICK = 10   # s between two looks at the clock
+ALL_DAYS = list(range(1, 8))
 COVER_BY_ID = {c["id"]: c for c in COVERS}
 COVER_CODES = {str(c[k]): (c["id"], k) for c in COVERS for k in ("up", "down", "stop")}
 PROJECTORS = CONFIG.get("projector", [])
@@ -1065,6 +1077,124 @@ def _last_code(topic: str, code: str) -> None:
                               "at": now(), "ts": time.time()}
 
 
+def _load_schedules() -> tuple[dict[str, list[dict]], dict[str, str]]:
+    """The schedules file: the rules of each outlet, and the key of the last rule applied to each.
+    Missing or unreadable, there is no schedule."""
+    try:
+        data = json.loads(SCHEDULES_FILE.read_text())
+    except (OSError, ValueError):
+        return {}, {}
+    return ({oid: rules for oid, rules in data.get("rules", {}).items() if oid in BY_ID},
+            {oid: key for oid, key in data.get("applied", {}).items() if oid in BY_ID})
+
+
+schedules, applied = _load_schedules()
+
+
+def save_schedules() -> None:
+    """Writes the schedules file, whole. Under lock."""
+    SCHEDULES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SCHEDULES_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"rules": schedules, "applied": applied}, indent=1))
+    tmp.replace(SCHEDULES_FILE)
+
+
+def check_rules(rules) -> list[dict]:
+    """An outlet's schedule, tidied: [{"at": "HH:MM", "on": bool, "days": [1-7]}]. Raises ValueError."""
+    if not isinstance(rules, list) or len(rules) > MAX_RULES:
+        raise ValueError
+    return [_check_rule(r) for r in rules]
+
+
+def _check_rule(rule) -> dict:
+    if not isinstance(rule, dict) or set(rule) - {"at", "on", "days"} or not isinstance(rule.get("on"), bool) \
+            or not isinstance(rule.get("at"), str) or not TIME_RE.fullmatch(rule["at"]):
+        raise ValueError
+    days = rule.get("days", ALL_DAYS)
+    if not isinstance(days, list) or not days or any(type(d) is not int or not 1 <= d <= 7 for d in days):
+        raise ValueError
+    return {"at": rule["at"], "on": rule["on"], "days": sorted(set(days))}
+
+
+def _falls(rule: dict, when: datetime, shift: int) -> datetime | None:
+    """When the rule falls on the day `shift` days from `when`'s, None when it skips that day."""
+    day = (when + timedelta(days=shift)).date()
+    if day.isoweekday() not in rule["days"]:
+        return None
+    hour, minute = map(int, rule["at"].split(":"))
+    return datetime.combine(day, daytime(hour, minute))
+
+
+def due(rules: list[dict], when: datetime) -> tuple[datetime, dict] | None:
+    """The rule in force at `when`: the latest one that fell within the last 24 h, with when it fell.
+    Two at the same moment: the last of the list."""
+    best = None
+    for rule in rules:
+        for shift in (-1, 0):
+            t = _falls(rule, when, shift)
+            if t and t <= when and when - t < timedelta(days=1) and (best is None or t >= best[0]):
+                best = (t, rule)
+    return best
+
+
+def upcoming(rules: list[dict], when: datetime) -> tuple[datetime, dict] | None:
+    """The next rule to fall after `when`, within a week, with when it falls."""
+    best = None
+    for rule in rules:
+        for shift in range(8):
+            t = _falls(rule, when, shift)
+            if t and t > when:
+                if best is None or t < best[0]:
+                    best = (t, rule)
+                break
+    return best
+
+
+def _rule_key(hit: tuple[datetime, dict]) -> str:
+    return f"{hit[0]:%Y-%m-%d %H:%M} {'on' if hit[1]['on'] else 'off'}"
+
+
+def tick(when: datetime | None = None) -> None:
+    """Applies, to every outlet, the rule in force that has not been applied yet: at its time, or
+    once the hub is back after missing it. Without the broker, the rules wait for the next tick."""
+    when = when or datetime.now()
+    with lock:
+        hits = {oid: hit for oid, rules in schedules.items() if (hit := due(rules, when)) and applied.get(oid) != _rule_key(hit)}
+    sock = conn
+    for oid, hit in hits.items():
+        if sock is None:
+            return
+        try:
+            switch(sock, BY_ID[oid], hit[1]["on"])
+        except OSError as e:
+            log.warning("%s: schedule not sent: %s", oid, e)
+            return
+        log.info("%s: on schedule, the rule of %s", oid, hit[0].strftime("%H:%M"))
+        with lock:
+            applied[oid] = _rule_key(hit)
+            save_schedules()
+
+
+def set_schedule(oid: str, rules: list[dict]) -> None:
+    """Replaces the outlet's rules and applies the one in force right away, if any."""
+    with lock:
+        if rules:
+            schedules[oid] = rules
+        else:
+            schedules.pop(oid, None)
+        save_schedules()
+    tick()
+
+
+def schedule_loop() -> None:
+    while True:
+        try:
+            tick()
+        except Exception:  # noqa: BLE001  a bad tick must not end the schedules
+            log.exception("schedule")
+        time.sleep(SCHEDULE_TICK)
+
+
 def listen() -> None:
     global conn
     while True:
@@ -1124,8 +1254,8 @@ def snapshot() -> dict:
             "homebridge": homebridge_up(),
             "bridge": {"online": bool(seen and time.time() - seen < BRIDGE_TIMEOUT),
                        "last_seen": datetime.fromtimestamp(seen).astimezone().isoformat(timespec="seconds") if seen else None},
-            "outlets": [{"id": o["id"], "name": o["name"], **state["outlets"].get(o["id"], {"on": None, "at": None})}
-                        for o in OUTLETS],
+            "outlets": [{"id": o["id"], "name": o["name"], **state["outlets"].get(o["id"], {"on": None, "at": None}),
+                         "schedule": schedules.get(o["id"], []), "next": _next(o["id"])} for o in OUTLETS],
             "covers": [{"id": c["id"], "name": c["name"],
                         "position": None if (p := _position(c["id"])) is None else round(p),
                         "moving": {1: "down", -1: "up"}.get(state["covers"][c["id"]]["dir"]),
@@ -1140,6 +1270,12 @@ def snapshot() -> dict:
                            for p in PROJECTORS],
             "last_code": {k: v for k, v in state["last_code"].items() if k != "ts"} if state["last_code"] else None,
         }
+
+
+def _next(oid: str) -> dict | None:
+    """The outlet's next rule, {"at": when it falls, "on": what it does}, None without one. Under lock."""
+    hit = upcoming(schedules.get(oid, []), datetime.now())
+    return {"at": hit[0].astimezone().isoformat(timespec="minutes"), "on": hit[1]["on"]} if hit else None
 
 
 def _is_package(app) -> bool:
@@ -1181,6 +1317,7 @@ def _cover_body(body: dict) -> int | None:
 
 POST_KINDS = {"outlets": BY_ID, "covers": COVER_BY_ID, "projectors": PROJECTOR_BY_ID}
 POST_BODIES = {"outlets": _outlet_body, "covers": _cover_body, "projectors": _projector_body}
+SCHEDULE_EXPECTED = 'expected a list of up to 20 rules {"at": "HH:MM", "on": true, "days": [1-7]} (days: 1 = Monday, all if omitted)'
 POST_EXPECTED = {"outlets": 'expected {"on": true} or {"on": false}',
                  "covers": 'expected {"position": 0-100}, {"stop": true}, {"press": "up"} or {"declare": 0}',
                  "projectors": 'expected {"on": true}, {"key": "HOME"}, {"app": "<package>"}, {"tap": [0.5, 0.5]}, '
@@ -1267,6 +1404,23 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(503, {"error": f"broker: {e}"})
         self._json(202, {"id": device["id"], "on": value})
 
+    def do_PUT(self):
+        # PUT /api/outlets/<id>/schedule, the whole schedule. JSON only, as for POST.
+        parts = self.path.split("?", 1)[0].strip("/").split("/")
+        if len(parts) != 4 or parts[:2] != ["api", "outlets"] or parts[3] != "schedule":
+            return self._json(404, {"error": "not found"})
+        outlet = BY_ID.get(parts[2])
+        if not outlet:
+            return self._json(404, {"error": "unknown outlet"})
+        if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
+            return self._json(415, {"error": "send JSON"})
+        try:
+            rules = check_rules(json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0))))
+        except (ValueError, TypeError):
+            return self._json(400, {"error": SCHEDULE_EXPECTED})
+        set_schedule(outlet["id"], rules)
+        self._json(200, {"id": outlet["id"], "schedule": rules})
+
     def _post_cover(self, cover: dict, body: dict, position: int | None) -> None:
         if "press" in body:
             press(cover["id"], body["press"])
@@ -1291,6 +1445,7 @@ class Handler(SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     threading.Thread(target=listen, daemon=True, name="mqtt").start()
+    threading.Thread(target=schedule_loop, daemon=True, name="schedule").start()
     for p in PROJECTORS:
         threading.Thread(target=watch, args=(p["id"],), daemon=True, name=f"watch-{p['id']}").start()
         threading.Thread(target=guard, args=(p["id"],), daemon=True, name=f"guard-{p['id']}").start()

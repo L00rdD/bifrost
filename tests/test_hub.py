@@ -5,17 +5,21 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
 import urllib.error
 import urllib.request
+from datetime import datetime, timedelta
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 os.environ["OUTLETS_FILE"] = str(ROOT / "tests" / "outlets.toml")
 os.environ["HOMEBRIDGE_HOST"] = "127.0.0.1"
+SCHEDULES = Path(tempfile.mkdtemp()) / "hub" / "schedules.json"
+os.environ["SCHEDULES_FILE"] = str(SCHEDULES)
 sys.path.insert(0, str(ROOT / "hub"))
 import hub  # noqa: E402
 
@@ -43,6 +47,8 @@ class FakeSock:
 def reset():
     with hub.lock:
         hub.state.update(broker=True, bridge_seen=None, last_code=None, outlets={})
+        hub.schedules.clear()
+        hub.applied.clear()
         for c in hub.state["covers"].values():
             if c["run"]:
                 c["run"].set()
@@ -937,6 +943,121 @@ class HealthTest(unittest.TestCase):
         self.assertEqual(hub.snapshot()["projectors"][0]["due"], "nightly")
 
 
+def rule(at, on, days=None):
+    return {"at": at, "on": on, "days": days or list(range(1, 8))}
+
+
+SUNDAY = datetime(2026, 11, 8, 9, 0)  # a Sunday
+
+
+class ScheduleTest(unittest.TestCase):
+    def setUp(self):
+        reset()
+        self.sock = FakeSock()
+        hub.conn = self.sock
+        SCHEDULES.unlink(missing_ok=True)
+
+    def tearDown(self):
+        hub.conn = None
+
+    def sent(self):
+        return [p for t, p, _ in self.sock.published if t == "433/send"]
+
+    def test_rules_are_tidied(self):
+        self.assertEqual(hub.check_rules([{"at": "08:30", "on": True}, {"at": "23:30", "on": False, "days": [7, 6, 6]}]),
+                         [rule("08:30", True), rule("23:30", False, [6, 7])])
+        self.assertEqual(hub.check_rules([]), [])
+
+    def test_bad_rules_are_refused(self):
+        for rules in ({}, "08:30", [None], [["08:30", True]], [{"at": "8:30", "on": True}], [{"at": "24:00", "on": True}],
+                      [{"at": "08:30", "on": "yes"}], [{"at": "08:30"}], [{"on": True}], [{"at": "08:30", "on": True, "days": []}],
+                      [{"at": "08:30", "on": True, "days": [0]}], [{"at": "08:30", "on": True, "days": [8]}],
+                      [{"at": "08:30", "on": True, "days": "1"}], [{"at": "08:30", "on": True, "days": [True]}],
+                      [{"at": "08:30", "on": True, "outlet": "fan"}], [rule("08:30", True)] * 21):
+            with self.subTest(rules=rules):
+                self.assertRaises(ValueError, hub.check_rules, rules)
+
+    def test_the_rule_in_force_is_the_latest_within_a_day(self):
+        rules = [rule("08:30", True), rule("23:30", False)]
+        self.assertEqual(hub.due(rules, SUNDAY), (datetime(2026, 11, 8, 8, 30), rules[0]))
+        self.assertEqual(hub.due(rules, datetime(2026, 11, 8, 8, 30)), (datetime(2026, 11, 8, 8, 30), rules[0]))
+        self.assertEqual(hub.due(rules, datetime(2026, 11, 8, 23, 29)), (datetime(2026, 11, 8, 8, 30), rules[0]))
+        self.assertEqual(hub.due(rules, datetime(2026, 11, 9, 0, 10)), (datetime(2026, 11, 8, 23, 30), rules[1]))
+        self.assertIsNone(hub.due([], SUNDAY))
+        # weekdays only: on Sunday, Saturday's and Sunday's rules do not fall; Friday's is too old
+        weekdays = [rule("08:30", True, [1, 2, 3, 4, 5])]
+        self.assertIsNone(hub.due(weekdays, SUNDAY))
+        self.assertEqual(hub.due(weekdays, datetime(2026, 11, 7, 8, 0)), (datetime(2026, 11, 6, 8, 30), weekdays[0]))
+        # two rules at the same moment: the last one of the list
+        same = [rule("08:30", True), rule("08:30", False)]
+        self.assertEqual(hub.due(same, SUNDAY), (datetime(2026, 11, 8, 8, 30), same[1]))
+
+    def test_the_next_rule(self):
+        rules = [rule("08:30", True), rule("23:30", False, [1, 2, 3, 4, 5])]
+        self.assertEqual(hub.upcoming(rules, SUNDAY), (datetime(2026, 11, 9, 8, 30), rules[0]))
+        self.assertEqual(hub.upcoming(rules, datetime(2026, 11, 9, 9, 0)), (datetime(2026, 11, 9, 23, 30), rules[1]))
+        self.assertEqual(hub.upcoming([rules[1]], SUNDAY), (datetime(2026, 11, 9, 23, 30), rules[1]))
+        self.assertIsNone(hub.upcoming([], SUNDAY))
+
+    def test_tick_applies_each_rule_once_and_catches_up(self):
+        hub.schedules["terrarium"] = [rule("08:30", True), rule("23:30", False)]
+        hub.tick(SUNDAY)  # 09:00: the 08:30 rule was missed, it applies now
+        self.assertEqual(self.sent(), ["1111"])
+        hub.tick(datetime(2026, 11, 8, 12, 0))  # applied already
+        hub.tick(datetime(2026, 11, 8, 23, 29))
+        self.assertEqual(self.sent(), ["1111"])
+        hub.tick(datetime(2026, 11, 8, 23, 30))
+        hub.tick(datetime(2026, 11, 9, 0, 5))
+        self.assertEqual(self.sent(), ["1111", "2222"])
+        hub.tick(datetime(2026, 11, 9, 8, 30))  # the next day, the same rule falls again
+        self.assertEqual(self.sent(), ["1111", "2222", "1111"])
+        self.assertEqual(hub.applied, {"terrarium": "2026-11-09 08:30 on"})
+        self.assertEqual(json.loads(SCHEDULES.read_text())["applied"], {"terrarium": "2026-11-09 08:30 on"})
+
+    def test_tick_waits_for_the_broker(self):
+        hub.schedules["fan"] = [rule("08:30", True)]
+        hub.conn = None
+        hub.tick(SUNDAY)
+        self.assertEqual(hub.applied, {})
+        hub.conn = self.sock
+        hub.tick(SUNDAY)
+        self.assertEqual(self.sent(), ["3333"])
+
+    def test_tick_does_nothing_without_a_rule_in_force(self):
+        hub.schedules["fan"] = [rule("08:30", True, [1, 2, 3, 4, 5])]
+        hub.tick(SUNDAY)
+        self.assertEqual(self.sent(), [])
+        self.assertFalse(SCHEDULES.exists())
+
+    def test_set_schedule_saves_and_applies_at_once(self):
+        just_passed = (datetime.now() - timedelta(minutes=1)).strftime("%H:%M")
+        hub.set_schedule("fan", [rule(just_passed, False)])
+        self.assertEqual(self.sent(), ["4444"])
+        self.assertEqual(json.loads(SCHEDULES.read_text())["rules"], {"fan": [rule(just_passed, False)]})
+        self.assertEqual(hub._load_schedules(), ({"fan": [rule(just_passed, False)]}, hub.applied))
+        hub.set_schedule("fan", [])
+        self.assertEqual(hub.schedules, {})
+        self.assertEqual(json.loads(SCHEDULES.read_text())["rules"], {})
+
+    def test_loading_drops_unknown_outlets_and_bad_files(self):
+        SCHEDULES.parent.mkdir(parents=True, exist_ok=True)
+        SCHEDULES.write_text(json.dumps({"rules": {"fan": [rule("08:30", True)], "gone": []}, "applied": {"gone": "x", "fan": "k"}}))
+        self.assertEqual(hub._load_schedules(), ({"fan": [rule("08:30", True)]}, {"fan": "k"}))
+        SCHEDULES.write_text("{not json")
+        self.assertEqual(hub._load_schedules(), ({}, {}))
+        SCHEDULES.unlink()
+        self.assertEqual(hub._load_schedules(), ({}, {}))
+
+    def test_snapshot_tells_the_schedule_and_the_next_rule(self):
+        hub.schedules["fan"] = [rule("08:30", True), rule("23:30", False)]
+        outlets = {o["id"]: o for o in hub.snapshot()["outlets"]}
+        self.assertEqual(outlets["terrarium"]["schedule"], [])
+        self.assertIsNone(outlets["terrarium"]["next"])
+        self.assertEqual(outlets["fan"]["schedule"], hub.schedules["fan"])
+        expected = hub.upcoming(hub.schedules["fan"], datetime.now())
+        self.assertEqual(outlets["fan"]["next"], {"at": expected[0].astimezone().isoformat(timespec="minutes"), "on": expected[1]["on"]})
+
+
 class WebTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -1035,6 +1156,37 @@ class WebTest(unittest.TestCase):
             self.assertEqual(self.post("/api/projectors/nope", '{"on": true}'), (404, {"error": "unknown projector"}))
         finally:
             hub.adb = real
+
+    def put(self, path, body, ctype="application/json"):
+        req = urllib.request.Request(self.url + path, data=body.encode(), method="PUT", headers={"Content-Type": ctype})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def test_put_sets_the_schedule(self):
+        just_passed = (datetime.now() - timedelta(minutes=1)).strftime("%H:%M")
+        rules = [{"at": just_passed, "on": True}, {"at": "23:30", "on": False, "days": [5, 6, 7]}]
+        self.assertEqual(self.put("/api/outlets/fan/schedule", json.dumps(rules)),
+                         (200, {"id": "fan", "schedule": [rule(just_passed, True), rule("23:30", False, [5, 6, 7])]}))
+        self.assertEqual(self.sock.published, [("433/send", "3333", False)])  # the rule just passed applies at once
+        with urllib.request.urlopen(self.url + "/api/status.json", timeout=5) as r:
+            fan = [o for o in json.loads(r.read())["outlets"] if o["id"] == "fan"][0]
+        self.assertEqual(fan["schedule"], [rule(just_passed, True), rule("23:30", False, [5, 6, 7])])
+        self.assertIsNotNone(fan["next"])
+        self.assertEqual(self.put("/api/outlets/fan/schedule", "[]"), (200, {"id": "fan", "schedule": []}))
+
+    def test_put_errors(self):
+        self.assertEqual(self.put("/api/outlets/nope/schedule", "[]"), (404, {"error": "unknown outlet"}))
+        self.assertEqual(self.put("/api/outlets/fan", "[]"), (404, {"error": "not found"}))
+        self.assertEqual(self.put("/api/covers/screen/schedule", "[]"), (404, {"error": "not found"}))
+        self.assertEqual(self.put("/api/outlets/fan/schedule", "[]", "text/plain")[0], 415)
+        for body in ("not json", "{}", '[{"at": "8:30", "on": true}]', '[{"at": "08:30", "on": 1}]', '[{"at": "08:30", "on": true, "days": [0]}]'):
+            with self.subTest(body=body):
+                self.assertEqual(self.put("/api/outlets/fan/schedule", body), (400, {"error": hub.SCHEDULE_EXPECTED}))
+        self.assertEqual(self.sock.published, [])
+        self.assertEqual(hub.schedules, {})
 
     def test_post_has_no_cors(self):
         req = urllib.request.Request(self.url + "/api/outlets/fan", data=b'{"on": false}', method="POST",

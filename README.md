@@ -26,10 +26,17 @@ and talks to the hub:
 | `bifrost/cover/<id>/declare` | `0`-`100` | where the cover really is: the hub takes it as its position, nothing moves |
 | `bifrost/projector/<id>/set`, `/key`, `/app/set` | `ON` / `OFF`, an Android key (`HOME`, `DPAD_UP`…), an app package or `home` (the HOME key) | the hub drives the projector over adb |
 | `bifrost/projector/<id>/state`, `/app` | `ON` / `OFF`, the app in front (`home` for the launcher, `screensaver`), retained | from the hub's look at the projector every 5 s |
+| `PUT :8582/api/outlets/<id>/schedule` | `[{"at": "08:30", "on": true, "days": [1, 2, 3, 4, 5]}, …]` | the outlet's schedule, from the dashboard: on or off at a time of day, on the days given (1 = Monday, all if omitted). Kept in `data/hub/schedules.json`; the rule in force applies at once |
 | `bifrost/cover/<id>/position`, `/target`, `/state` | `0`-`100`, `0`-`100`, `INCREASING` / `DECREASING` / `STOPPED`, retained | where the hub reckons the cover is, for HomeKit and the hub's next start |
 
 Retained means the broker keeps the last state: Homebridge gets it back as soon as it
 restarts, and a client can confirm a switch by waiting for a fresh state.
+
+Each outlet can follow a schedule, set from the dashboard under its name: a few rules, on or
+off at a time of day, on the days of the week chosen. Every 10 s the hub applies the rule in
+force (the latest one that fell within the last 24 h) if it has not yet: at its time, or as
+soon as the hub is back when it missed it. Switched by hand afterwards, the outlet stays so
+until the next rule.
 
 | Part | Where | What |
 | :--- | :--- | :--- |

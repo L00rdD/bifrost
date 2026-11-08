@@ -7,3 +7,4 @@ firmware/rf-bridge/build/
 __pycache__/
 /outlets.toml
 build/
+.coverage

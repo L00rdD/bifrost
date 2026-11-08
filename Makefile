@@ -9,7 +9,7 @@ deploy:          ## render the Homebridge config, copy the project to the Pi and
 	python3 render.py
 	rsync -az --inplace --delete --exclude .git --exclude data --exclude .env --exclude firmware \
 	      --exclude .DS_Store ./ $(PI):$(PI_DIR)/
-	ssh $(PI) 'cd $(PI_DIR) && mkdir -p data/homebridge data/mosquitto data/adb \
+	ssh $(PI) 'cd $(PI_DIR) && mkdir -p data/homebridge data/mosquitto data/adb data/hub \
 	  && cp homebridge/config.json data/homebridge/config.json && docker compose up -d --build --remove-orphans && docker compose restart hub \
 	  && (docker exec homebridge test -d /homebridge/node_modules/homebridge-mqttthing \
 	      || docker exec homebridge hb-service add homebridge-mqttthing) && docker compose restart homebridge'

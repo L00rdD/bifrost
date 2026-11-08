@@ -1,5 +1,6 @@
 // The dashboard: paints /api/status.json every 5 s (every second while something moves) and sends
-// the switches, the cover's and the projector's orders as POSTs to the hub.
+// the switches, the cover's and the projector's orders as POSTs to the hub, and each outlet's
+// schedule (on or off at a time of day, on the days chosen) as a PUT.
 const $ = (sel, root = document) => root.querySelector(sel);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
 const ago = (iso) => {
@@ -33,7 +34,11 @@ function card(o) {
     bulb.append(el("span", "ring"), el("span", "ring"), el("span", "ring"));
     bulb.insertAdjacentHTML("beforeend", BULB);
     const info = el("div");
-    info.append(el("h2"), el("p", "when"));
+    const plan = el("button", "plan");
+    plan.title = "the schedule: on or off at a time of day";
+    plan.setAttribute("aria-expanded", "false");
+    plan.addEventListener("click", () => (c.querySelector(".editor") ? closeEditor(c) : openEditor(c, o.id)));
+    info.append(el("h2"), el("p", "when"), plan);
     const sw = el("button", "switch");
     sw.setAttribute("role", "switch");
     sw.append(el("span", "knob"));
@@ -51,10 +56,110 @@ function paintOutlet(o) {
   c.classList.toggle("pending", !!p);
   $("h2", c).textContent = o.name;
   $(".when", c).textContent = p ? (p.want ? "switching on…" : "switching off…")
-    : o.on === null ? "state unknown, press to switch" : `${o.on ? "On" : "Off"}${o.at ? " · " + ago(o.at) : ""}`;
+    : o.on === null ? "state unknown, press to switch" : `${o.on ? "On" : "Off"}${o.at ? " · " + ago(o.at) : ""}${nextText(o.next)}`;
+  $(".plan", c).textContent = planText(o.schedule || []);
   const sw = $(".switch", c);
   sw.setAttribute("aria-checked", on === null ? "mixed" : String(on));
   sw.setAttribute("aria-label", `${o.name}: ${on ? "on" : "off"}`);
+}
+
+// ---------- the schedule: rules { at: "HH:MM", on, days: [1-7] }, 1 = Monday ----------
+const DAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+const ALL_DAYS = [1, 2, 3, 4, 5, 6, 7];
+const clock = (iso) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+// " · off at 23:30", or the day too when it is not within the day
+function nextText(next) {
+  if (!next) return "";
+  const d = new Date(next.at), soon = d - Date.now() < 86400e3;
+  return ` · ${next.on ? "on" : "off"} ${soon ? "at " : DAYS[(d.getDay() + 6) % 7] + " "}${clock(next.at)}`;
+}
+
+function daysText(days) {
+  const k = days.join();
+  return k === ALL_DAYS.join() ? "" : k === "1,2,3,4,5" ? " weekdays" : k === "6,7" ? " weekends" : " " + days.map((d) => DAYS[d - 1]).join(" ");
+}
+
+function planText(rules) {
+  return "⏱ " + (rules.length ? rules.map((r) => `${r.on ? "on" : "off"} ${r.at}${daysText(r.days)}`).join(" · ") : "no schedule");
+}
+
+function closeEditor(c) {
+  c.querySelector(".editor")?.remove();
+  $(".plan", c).setAttribute("aria-expanded", "false");
+}
+
+// The editor works on a copy of the rules; Save sends them all, the hub applies the one in force at once
+function openEditor(c, id) {
+  const rules = (status.outlets.find((x) => x.id === id)?.schedule || []).map((r) => ({ ...r, days: [...r.days] }));
+  const editor = el("div", "editor"), list = el("div", "rules");
+  const draw = () => {
+    list.replaceChildren(...rules.map((r, i) => ruleRow(r, () => { rules.splice(i, 1); draw(); })));
+    if (!rules.length) list.append(el("p", "empty", "No rule: add one, the outlet then follows the clock."));
+  };
+  draw();
+  const actions = el("div", "actions");
+  for (const [label, cls, fn] of [["+ rule", "add", () => { rules.push({ at: "08:00", on: true, days: [...ALL_DAYS] }); draw(); }],
+                                  ["Cancel", "cancel", () => closeEditor(c)], ["Save", "save", () => saveSchedule(c, id, rules)]]) {
+    const b = el("button", cls, label);
+    b.type = "button";
+    b.addEventListener("click", fn);
+    actions.append(b);
+  }
+  editor.append(el("p", "hint", "Each rule switches the outlet at its time on the days lit. A rule whose time has passed today applies as soon as it is saved; switched by hand, the outlet stays so until the next rule."),
+                list, actions);
+  c.append(editor);
+  $(".plan", c).setAttribute("aria-expanded", "true");
+}
+
+function ruleRow(r, onDelete) {
+  const row = el("div", "rule");
+  const on = el("select");
+  for (const [value, label] of [["true", "on"], ["false", "off"]]) {
+    const o = el("option", "", label);
+    o.value = value;
+    on.append(o);
+  }
+  on.value = String(r.on);
+  on.setAttribute("aria-label", "on or off");
+  on.addEventListener("change", () => (r.on = on.value === "true"));
+  const at = el("input");
+  Object.assign(at, { type: "time", value: r.at, required: true });
+  at.setAttribute("aria-label", "time");
+  at.addEventListener("change", () => (r.at = at.value));
+  const days = el("div", "days");
+  DAYS.forEach((label, i) => {
+    const d = i + 1, b = el("button", "day", label);
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(r.days.includes(d)));
+    b.addEventListener("click", () => {
+      r.days = r.days.includes(d) ? r.days.filter((x) => x !== d) : [...r.days, d].sort();
+      b.setAttribute("aria-pressed", String(r.days.includes(d)));
+    });
+    days.append(b);
+  });
+  const del = el("button", "del", "×");
+  del.type = "button";
+  del.title = "remove this rule";
+  del.addEventListener("click", onDelete);
+  row.append(on, el("span", "", "at"), at, days, del);
+  return row;
+}
+
+async function saveSchedule(c, id, rules) {
+  if (rules.some((r) => !r.at)) return toast("a rule needs a time");
+  if (rules.some((r) => !r.days.length)) return toast("a rule needs at least one day");
+  try {
+    const r = await fetch(`/api/outlets/${encodeURIComponent(id)}/schedule`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(rules),
+    });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status);
+  } catch (e) {
+    flash(c, "failed");
+    return toast(`${id}: ${e.message}`);
+  }
+  closeEditor(c);
+  load();
 }
 
 const BEAMER = `<svg viewBox="0 0 150 96" aria-hidden="true">

@@ -493,3 +493,101 @@ test("the screen refuses an order: the card says it failed", async (t) => {
   await settle();
   assert.equal(p.text("#toast"), "screen: 500");
 });
+
+// ---------- the schedule of each outlet ----------
+const ALL = [1, 2, 3, 4, 5, 6, 7];
+const rule = (at, on, days = ALL) => ({ at, on, days });
+const clock = (iso) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+test("the schedule under each outlet, the next rule after the state", async (t) => {
+  const s = status();
+  s.outlets[0].schedule = [rule("08:30", true), rule("23:30", false, [1, 2, 3, 4, 5])];
+  s.outlets[0].next = { at: new Date(NOW + 3600e3).toISOString(), on: false };
+  s.outlets[1].schedule = [rule("07:00", true, [6, 7]), rule("12:00", false, [1, 3])];
+  s.outlets[1].next = { at: new Date(NOW + 2 * 86400e3).toISOString(), on: true };
+  const p = await open(t, s);
+  const lamp = p.card("outlet", "terrarium"), fan = p.card("outlet", "fan");
+  assert.equal(p.text(".plan", lamp), "⏱ on 08:30 · off 23:30 weekdays");
+  assert.equal(p.text(".when", lamp), `On · 5 min ago · off at ${clock(s.outlets[0].next.at)}`);
+  assert.equal(p.text(".plan", fan), "⏱ on 07:00 weekends · off 12:00 Mo We");
+  const day = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"][(new Date(s.outlets[1].next.at).getDay() + 6) % 7];
+  assert.equal(p.text(".when", fan), `Off · on ${day} ${clock(s.outlets[1].next.at)}`);
+  assert.equal(p.text(".plan", p.card("outlet", "heater")), "⏱ no schedule");
+  assert.equal(p.$(".editor", lamp), null);
+});
+
+test("the editor adds a rule, sets its time, off, and weekdays, and saves it all as a PUT", async (t) => {
+  const s = status();
+  s.outlets[1].schedule = [rule("08:30", true)];
+  const p = await open(t, s);
+  const fan = p.card("outlet", "fan");
+  p.$(".plan", fan).click();
+  const editor = p.$(".editor", fan);
+  assert.ok(editor);
+  assert.equal(p.$(".plan", fan).getAttribute("aria-expanded"), "true");
+  assert.equal(editor.querySelectorAll(".rule").length, 1);
+  assert.equal(p.$("select", editor).value, "true");
+  assert.equal(p.$("input", editor).value, "08:30");
+  p.$(".add", fan).click();
+  const rows = editor.querySelectorAll(".rule");
+  assert.equal(rows.length, 2);
+  const at = p.$("input", rows[1]), on = p.$("select", rows[1]);
+  at.value = "23:30"; at.fire("change");
+  on.value = "false"; on.fire("change");
+  const days = rows[1].querySelectorAll(".day");
+  assert.equal(days.length, 7);
+  days[5].click(); days[6].click();
+  assert.equal(days[5].getAttribute("aria-pressed"), "false");
+  assert.equal(days[4].getAttribute("aria-pressed"), "true");
+  p.$(".save", fan).click();
+  await settle();
+  const put = p.calls.filter((c) => c.method === "PUT");
+  assert.deepEqual(put, [{ url: "/api/outlets/fan/schedule", method: "PUT", body: [rule("08:30", true), rule("23:30", false, [1, 2, 3, 4, 5])] }]);
+  assert.equal(p.$(".editor", fan), null);
+  assert.equal(p.$(".plan", fan).getAttribute("aria-expanded"), "false");
+  assert.equal(p.text("#toast"), "");
+  assert.ok(p.polls() >= 2);  // the state is read again: the hub may have applied a rule at once
+});
+
+test("a rule is removed, the editor is cancelled, and the plan line toggles it", async (t) => {
+  const s = status();
+  s.outlets[1].schedule = [rule("08:30", true), rule("23:30", false)];
+  const p = await open(t, s);
+  const fan = p.card("outlet", "fan");
+  p.$(".plan", fan).click();
+  const editor = p.$(".editor", fan);
+  editor.querySelectorAll(".del")[0].click();
+  const rows = editor.querySelectorAll(".rule");
+  assert.equal(rows.length, 1);
+  assert.equal(p.$("input", rows[0]).value, "23:30");
+  rows[0].querySelectorAll(".del")[0].click();
+  assert.equal(editor.querySelectorAll(".rule").length, 0);
+  assert.match(p.text(".empty", editor), /No rule/);
+  p.$(".cancel", fan).click();
+  assert.equal(p.$(".editor", fan), null);
+  assert.equal(p.calls.filter((c) => c.method === "PUT").length, 0);
+  assert.equal(p.text(".plan", fan), "⏱ on 08:30 · off 23:30");  // untouched: the editor worked on a copy
+  p.$(".plan", fan).click();
+  assert.ok(p.$(".editor", fan));
+  p.$(".plan", fan).click();
+  assert.equal(p.$(".editor", fan), null);
+});
+
+test("a rule without a day stays on the page, and a schedule the hub refuses says why", async (t) => {
+  const p = await open(t);
+  const fan = p.card("outlet", "fan");
+  p.$(".plan", fan).click();
+  p.$(".add", fan).click();
+  for (const d of p.$(".editor", fan).querySelectorAll(".day")) d.click();
+  p.$(".save", fan).click();
+  await settle();
+  assert.equal(p.text("#toast"), "a rule needs at least one day");
+  assert.equal(p.calls.filter((c) => c.method === "PUT").length, 0);
+  p.$(".editor", fan).querySelectorAll(".day")[0].click();
+  p.answer = (url, options) => (options.method === "PUT" ? { status: 400, body: { error: "expected a list of rules" } } : p.status);
+  p.$(".save", fan).click();
+  await settle();
+  assert.equal(p.text("#toast"), "fan: expected a list of rules");
+  assert.ok(p.$(".editor", fan));  // still open, to fix it
+  assert.ok(fan.classList.contains("failed"));
+});
