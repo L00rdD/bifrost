@@ -74,7 +74,7 @@ class MessageTest(unittest.TestCase):
         self.sock = FakeSock()
 
     def test_set_sends_the_outlet_code(self):
-        hub.on_message(self.sock, "bifrost/outlet/grow-lamp/set", "on")
+        hub.on_message(self.sock, "bifrost/outlet/terrarium/set", "on")
         hub.on_message(self.sock, "bifrost/outlet/fan/set", "OFF")
         self.assertEqual(self.sock.published, [("433/send", "1111", False), ("433/send", "4444", False)])
 
@@ -85,7 +85,7 @@ class MessageTest(unittest.TestCase):
 
     def test_code_heard_publishes_the_state_retained(self):
         hub.on_message(self.sock, "433/receive", "2222")
-        self.assertEqual(self.sock.published, [("bifrost/outlet/grow-lamp/state", "OFF", True)])
+        self.assertEqual(self.sock.published, [("bifrost/outlet/terrarium/state", "OFF", True)])
         self.assertFalse(hub.snapshot()["outlets"][0]["on"])
 
     def test_unknown_code_only_becomes_the_last_code(self):
@@ -968,7 +968,7 @@ class WebTest(unittest.TestCase):
     def test_status_json_with_cors(self):
         with urllib.request.urlopen(self.url + "/api/status.json", timeout=5) as r:
             self.assertEqual(r.headers["Access-Control-Allow-Origin"], "*")
-            self.assertEqual([o["id"] for o in json.loads(r.read())["outlets"]], ["grow-lamp", "fan"])
+            self.assertEqual([o["id"] for o in json.loads(r.read())["outlets"]], ["terrarium", "fan"])
 
     def test_dashboard_is_served(self):
         with urllib.request.urlopen(self.url + "/", timeout=5) as r:

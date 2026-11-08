@@ -9,7 +9,7 @@ const ago = (s) => new Date(NOW - s * 1000).toISOString();
 
 const status = (more = {}) => ({
   updated_at: ago(0), broker: true, homebridge: true, bridge: { online: true, last_seen: ago(3) },
-  outlets: [{ id: "grow-lamp", name: "Grow lamp", on: true, at: ago(300) },
+  outlets: [{ id: "terrarium", name: "Terrarium", on: true, at: ago(300) },
             { id: "fan", name: "Fan", on: false, at: null },
             { id: "heater", name: "Heater", on: null, at: null }],
   covers: [], projectors: [], last_code: null, ...more,
@@ -38,12 +38,12 @@ test("the signal path, the outlets and the time of the update", async (t) => {
   for (const n of ["homebridge", "broker", "bridge", "air"]) assert.ok(p.$(`[data-n="${n}"]`).classList.contains("up"), n);
   for (const l of [0, 1, 2]) assert.ok(p.$(`[data-l="${l}"]`).classList.contains("up"));
   const [lamp, fan, heater] = p.$("#outlets").querySelectorAll(".outlet");
-  assert.deepEqual([lamp, fan, heater].map((c) => c.dataset.id), ["grow-lamp", "fan", "heater"]);
-  assert.equal(p.text("h2", lamp), "Grow lamp");
+  assert.deepEqual([lamp, fan, heater].map((c) => c.dataset.id), ["terrarium", "fan", "heater"]);
+  assert.equal(p.text("h2", lamp), "Terrarium");
   assert.equal(p.text(".when", lamp), "On · 5 min ago");
   assert.ok(lamp.classList.contains("on"));
   assert.equal(p.$(".switch", lamp).getAttribute("aria-checked"), "true");
-  assert.equal(p.$(".switch", lamp).getAttribute("aria-label"), "Grow lamp: on");
+  assert.equal(p.$(".switch", lamp).getAttribute("aria-label"), "Terrarium: on");
   assert.match(p.$(".bulb", lamp).innerHTML, /class="glass"/);
   assert.equal(p.text(".when", fan), "Off");
   assert.equal(p.$(".switch", fan).getAttribute("aria-checked"), "false");
@@ -176,13 +176,13 @@ test("a switch sends the order, waits for the bridge's echo, and lights the bulb
 
 test("switching off shows it at once", async (t) => {
   const p = await open(t);
-  const lamp = p.card("outlet", "grow-lamp");
+  const lamp = p.card("outlet", "terrarium");
   p.$(".switch", lamp).click();
   await settle();
-  assert.deepEqual(p.posted(), [["/api/outlets/grow-lamp", { on: false }]]);
+  assert.deepEqual(p.posted(), [["/api/outlets/terrarium", { on: false }]]);
   assert.equal(p.text(".when", lamp), "switching off…");
   assert.ok(!lamp.classList.contains("on"));
-  assert.equal(p.$(".switch", lamp).getAttribute("aria-label"), "Grow lamp: off");
+  assert.equal(p.$(".switch", lamp).getAttribute("aria-label"), "Terrarium: off");
 });
 
 test("an unknown outlet switches on", async (t) => {

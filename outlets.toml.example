@@ -7,10 +7,16 @@
 # Homebridge gets one accessory per outlet (make deploy). Find codes with make sniff.
 
 [[outlet]]
-id = "grow-lamp"          # used in topics and by Mandrake ([light] outlet)
-name = "Grow lamp"        # shown in the Home app and on the home page card
+id = "terrarium"          # used in topics; shown in the Home app and on the home page card
+name = "Terrarium"
 on = "1234567"            # the codes of the remote's ON and OFF buttons
 off = "1234568"
+
+[[outlet]]
+id = "torii"              # the Mandrake torii lamp ([light] outlet in its plants.toml)
+name = "Torii"
+on = "1234569"
+off = "1234570"
 
 # A motorised cover, the projection screen: up / stop / down buttons, no position from the motor.
 # The hub times it: 0 % = rolled up at the top, 100 % = open at the projection height.

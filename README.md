@@ -4,7 +4,7 @@
 
 The bridge between the worlds of the house: 433 MHz radio, MQTT and HomeKit.
 It runs on the Pi next to d-mediaserver and controls the RF outlets (first one:
-the Mandrake grow lamp) from the iPhone Home app, Siri, or anything that
+the torii lamp of Mandrake) from the iPhone Home app, Siri, or anything that
 speaks MQTT.
 
 ```
