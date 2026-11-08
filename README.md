@@ -149,10 +149,10 @@ The dashboard and the home page card get the covers in `/api/status.json`, and
 
 The estimate goes wrong when the screen misses a code: the hub sent up, the bridge
 put it on the air, the screen stayed down, and the hub now reckons 0 % while the screen
-is open, so a close does nothing. The dashboard's *Manual* row is for that: ▲ and ▼ send
-the button as the remote would, whatever the hub reckons, and ■ stops it; the motor
-never stops on its own, so the hub sends stop itself after `close_time` or `open_time`
-at the latest. Once the screen is where you want it, *= rolled up* or *= open* tells
+is open, so a close does nothing. The dashboard's *Manual* row is for that: holding ▲ or ▼
+sends the button as the remote would, whatever the hub reckons, and letting go sends stop;
+the motor never stops on its own, so the hub sends stop itself after `close_time` or
+`open_time` at the latest if the button is still held. Once the screen is where you want it, *= rolled up* or *= open* tells
 the hub so: it takes 0 % or 100 % as its position and nothing moves. An up on the
 remote with the position unknown ends at 0 % too, the remote's stop being yours to press.
 

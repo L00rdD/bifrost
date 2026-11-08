@@ -409,10 +409,23 @@ test("the screen's card: its buttons and its slider send the orders", async (t) 
   const k = p.card("cover", "screen");
   const buttons = k.querySelectorAll("button");
   assert.deepEqual(buttons.map((b) => [b.textContent, b.className]),
-                   [["▲ Close", ""], ["■", "stop"], ["▼ Open", ""], ["▲", ""], ["▼", ""], ["= rolled up", "declare"], ["= open", "declare"]]);
+                   [["▲ Close", ""], ["■", "stop"], ["▼ Open", ""], ["▲", "hold"], ["▼", "hold"], ["= rolled up", "declare"], ["= open", "declare"]]);
   assert.equal(buttons[2].title, "down to the projection height");
   assert.equal(p.text(".manual span", k), "Manual");
-  for (const b of buttons) b.click();
+  for (const b of buttons) b.click();  // a click on ▲ or ▼ is not a hold: nothing
+  const [up, down] = [buttons[3], buttons[4]];
+  up.fire("pointerdown", { pointerId: 1 });
+  assert.equal(up.classList.contains("held"), true);
+  up.fire("pointerdown", { pointerId: 1 });  // still held: no second press
+  up.fire("pointerup");
+  assert.equal(up.classList.contains("held"), false);
+  up.fire("lostpointercapture");  // already let go: no second stop
+  down.fire("keydown", { key: " " });
+  down.fire("keydown", { key: " " });  // the key repeating: still the one press
+  down.fire("keyup", { key: " " });
+  down.fire("keydown", { key: "a" });
+  down.fire("pointerdown", { pointerId: 2 });
+  down.fire("pointercancel");
   const range = p.$("input", k);
   assert.deepEqual([range.type, range.min, range.max, range.step], ["range", 0, 100, 5]);
   assert.equal(range.getAttribute("aria-label"), "Screen: position");
@@ -423,11 +436,12 @@ test("the screen's card: its buttons and its slider send the orders", async (t) 
   assert.equal(range.dragging, false);
   await settle();
   assert.deepEqual(p.posted().map(([url, body]) => [url, JSON.stringify(body)]),
-                   [{ position: 0 }, { stop: true }, { position: 100 }, { press: "up" }, { press: "down" }, { declare: 0 },
-                    { declare: 100 }, { position: 35 }].map((b) => ["/api/covers/screen", JSON.stringify(b)]));
+                   [{ position: 0 }, { stop: true }, { position: 100 }, { declare: 0 }, { declare: 100 },
+                    { press: "up" }, { press: "stop" }, { press: "down" }, { press: "stop" }, { press: "down" }, { press: "stop" },
+                    { position: 35 }].map((b) => ["/api/covers/screen", JSON.stringify(b)]));
   const polls = p.polls();
   await p.tick(300);
-  assert.equal(p.polls(), polls + 8);  // one for each order
+  assert.equal(p.polls(), polls + 12);  // one for each order
 });
 
 test("the screen in every state", async (t) => {

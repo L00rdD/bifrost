@@ -320,11 +320,16 @@ function coverCard(c) {
     }
     const manual = el("div", "controls manual");
     manual.append(el("span", "", "Manual"));
-    for (const [label, body, cls, title] of [["▲", { press: "up" }, "", "up, as on the remote, whatever the drawing says: ■ stops it, the hub does after close_time at the latest"],
-                                              ["▼", { press: "down" }, "", "down, as on the remote, whatever the drawing says: ■ stops it, the hub does after open_time at the latest"],
-                                              ["= rolled up", { declare: 0 }, "declare", "the screen is really rolled up at the top: the hub takes 0 %, nothing moves"],
-                                              ["= open", { declare: 100 }, "declare", "the screen is really open at the projection height: the hub takes 100 %, nothing moves"]]) {
-      const b = el("button", cls, label);
+    for (const [label, key, title] of [["▲", "up", "hold to go up, as on the remote, whatever the drawing says: it stops when let go, after close_time at the latest"],
+                                       ["▼", "down", "hold to go down, as on the remote, whatever the drawing says: it stops when let go, after open_time at the latest"]]) {
+      const b = el("button", "hold", label);
+      b.title = title;
+      holdToPress(b, c.id, key);
+      manual.append(b);
+    }
+    for (const [label, body, title] of [["= rolled up", { declare: 0 }, "the screen is really rolled up at the top: the hub takes 0 %, nothing moves"],
+                                        ["= open", { declare: 100 }, "the screen is really open at the projection height: the hub takes 100 %, nothing moves"]]) {
+      const b = el("button", "declare", label);
       b.title = title;
       b.addEventListener("click", () => moveCover(c.id, body));
       manual.append(b);
@@ -339,6 +344,28 @@ function coverCard(c) {
     $("#covers").append(k);
   }
   return k;
+}
+
+// Up or down while the button is held, as on the remote, and stop as soon as it is let go
+// (finger lifted, pointer gone, key released); the hub stops it anyway at the measured time
+function holdToPress(b, id, key) {
+  const down = () => {
+    if (b.held) return;
+    b.held = true;
+    b.classList.add("held");
+    moveCover(id, { press: key });
+  };
+  const up = () => {
+    if (!b.held) return;
+    b.held = false;
+    b.classList.remove("held");
+    moveCover(id, { press: "stop" });
+  };
+  b.addEventListener("pointerdown", (e) => { b.setPointerCapture?.(e.pointerId); down(); });
+  for (const type of ["pointerup", "pointercancel", "lostpointercapture", "blur"]) b.addEventListener(type, up);
+  b.addEventListener("keydown", (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault?.(); down(); } });
+  b.addEventListener("keyup", (e) => { if (e.key === " " || e.key === "Enter") up(); });
+  b.addEventListener("contextmenu", (e) => e.preventDefault?.());  // a long touch is a hold, not a menu
 }
 
 function paintCover(c) {
