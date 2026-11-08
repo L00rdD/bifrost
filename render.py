@@ -36,8 +36,8 @@ for outlet in devices.get("outlet", []):
 
 
 def cover_buttons(cover):
-    """The dashboard's buttons as switches of one accessory. Close, Stop, Open and the two "it
-    really is there" are pushed and come back off, sending nothing (no offValue). Up and Down, as
+    """The dashboard's buttons as switches of one accessory. Fermer, Stop, Ouvrir and the two "it
+    really is there" are pushed and come back off, sending nothing (no offValue). Monter and Descendre, as
     on the remote, stay on while the screen moves that way; off is the stop, and the hub sends its
     own after the measured time at the latest."""
     base = f"bifrost/cover/{cover['id']}"
@@ -51,9 +51,9 @@ def cover_buttons(cover):
                 "topics": {"setOn": f"{base}/press",
                            "getOn": {"topic": f"{base}/state", "apply": f"return message == '{moving}' ? '{key}' : 'STOP';"}}}
 
-    return [push("Close", "set", "CLOSE"), push("Stop", "set", "STOP"), push("Open", "set", "OPEN"),
-            hold("Up", "UP", "DECREASING"), hold("Down", "DOWN", "INCREASING"),
-            push("Is rolled up", "declare", "0"), push("Is open", "declare", "100")]
+    return [push("Fermer", "set", "CLOSE"), push("Stop", "set", "STOP"), push("Ouvrir", "set", "OPEN"),
+            hold("Monter", "UP", "DECREASING"), hold("Descendre", "DOWN", "INCREASING"),
+            push("Est enroulé", "declare", "0"), push("Est ouvert", "declare", "100")]
 
 
 for cover in devices.get("cover", []):

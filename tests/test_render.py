@@ -40,15 +40,15 @@ class RenderTest(unittest.TestCase):
         screen = config["accessories"][2]
         self.assertEqual((screen["type"], screen["name"]), ("custom", "Screen"))
         buttons = {s["name"]: s for s in screen["services"]}
-        self.assertEqual(list(buttons), ["Screen Close", "Screen Stop", "Screen Open", "Screen Up", "Screen Down",
-                                         "Screen Is rolled up", "Screen Is open"])
+        self.assertEqual(list(buttons), ["Screen Fermer", "Screen Stop", "Screen Ouvrir", "Screen Monter", "Screen Descendre",
+                                         "Screen Est enroulé", "Screen Est ouvert"])
         self.assertTrue(all(s["type"] == "switch" for s in screen["services"]))
         self.assertNotIn("5553", json.dumps(config))
 
     def test_pushed_buttons_come_back_off_sending_nothing(self):
         buttons = {s["name"]: s for s in self.render()[2]["accessories"][2]["services"]}
-        for name, topic, value in [("Close", "set", "CLOSE"), ("Stop", "set", "STOP"), ("Open", "set", "OPEN"),
-                                   ("Is rolled up", "declare", "0"), ("Is open", "declare", "100")]:
+        for name, topic, value in [("Fermer", "set", "CLOSE"), ("Stop", "set", "STOP"), ("Ouvrir", "set", "OPEN"),
+                                   ("Est enroulé", "declare", "0"), ("Est ouvert", "declare", "100")]:
             b = buttons[f"Screen {name}"]
             self.assertEqual((b["topics"], b["onValue"], b["turnOffAfterms"]),
                              ({"setOn": f"bifrost/cover/screen/{topic}"}, value, 1000))
@@ -56,7 +56,7 @@ class RenderTest(unittest.TestCase):
 
     def test_up_and_down_stay_on_while_the_screen_moves_that_way(self):
         buttons = {s["name"]: s for s in self.render()[2]["accessories"][2]["services"]}
-        for name, key, moving in [("Up", "UP", "DECREASING"), ("Down", "DOWN", "INCREASING")]:
+        for name, key, moving in [("Monter", "UP", "DECREASING"), ("Descendre", "DOWN", "INCREASING")]:
             b = buttons[f"Screen {name}"]
             self.assertEqual((b["onValue"], b["offValue"], b["topics"]["setOn"]), (key, "STOP", "bifrost/cover/screen/press"))
             self.assertNotIn("turnOffAfterms", b)

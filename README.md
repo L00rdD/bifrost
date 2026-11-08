@@ -137,10 +137,10 @@ followed the same way (down then stop: the hub knows where it stopped).
    38 s move came out at 25.7 s and 17.3 s.
 3. Add a `[[cover]]` to `outlets.toml` (see the example), `make flash` if the bridge
    predates `<code> <pulse>`, then `make deploy`: the Home app gets the screen's
-   buttons, as on the dashboard: *Close*, *Stop* and *Open* (pushed, they come back off),
-   *Up* and *Down* as on the remote (on while the screen moves that way, off sends stop,
-   the hub's own stop comes after the measured time at the latest), and *Is rolled up* /
-   *Is open* when the hub's reckoning is wrong.
+   buttons, as on the dashboard: *Fermer*, *Stop* and *Ouvrir* (pushed, they come back off),
+   *Monter* and *Descendre* as on the remote (on while the screen moves that way, off sends stop,
+   the hub's own stop comes after the measured time at the latest), and *Est enroulé* /
+   *Est ouvert* when the hub's reckoning is wrong.
 
 The first move after the hub starts with no position known (retained on the
 broker otherwise) goes all the way up first. A down on the remote left to run
