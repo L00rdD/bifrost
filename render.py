@@ -33,16 +33,31 @@ for outlet in devices.get("outlet", []):
         "onValue": "ON",
         "offValue": "OFF",
     })
-for cover in devices.get("cover", []):
+
+
+def cover_buttons(cover):
+    """The dashboard's buttons as switches of one accessory. Close, Stop, Open and the two "it
+    really is there" are pushed and come back off, sending nothing (no offValue). Up and Down, as
+    on the remote, stay on while the screen moves that way; off is the stop, and the hub sends its
+    own after the measured time at the latest."""
     base = f"bifrost/cover/{cover['id']}"
-    config["accessories"].append({
-        **mqtt,
-        "type": "windowCovering",  # a blind in the Home app: 100 % open = the screen down
-        "name": cover["name"],
-        "topics": {"setTargetPosition": f"{base}/set", "getTargetPosition": f"{base}/target",
-                   "getCurrentPosition": f"{base}/position", "getPositionState": f"{base}/state"},
-        "positionStateValues": ["DECREASING", "INCREASING", "STOPPED"],
-    })
+
+    def push(label, order, value):
+        return {"type": "switch", "name": f"{cover['name']} {label}", "topics": {"setOn": f"{base}/{order}"},
+                "onValue": value, "turnOffAfterms": 1000}
+
+    def hold(label, key, moving):
+        return {"type": "switch", "name": f"{cover['name']} {label}", "onValue": key, "offValue": "STOP",
+                "topics": {"setOn": f"{base}/press",
+                           "getOn": {"topic": f"{base}/state", "apply": f"return message == '{moving}' ? '{key}' : 'STOP';"}}}
+
+    return [push("Close", "set", "CLOSE"), push("Stop", "set", "STOP"), push("Open", "set", "OPEN"),
+            hold("Up", "UP", "DECREASING"), hold("Down", "DOWN", "INCREASING"),
+            push("Is rolled up", "declare", "0"), push("Is open", "declare", "100")]
+
+
+for cover in devices.get("cover", []):
+    config["accessories"].append({**mqtt, "type": "custom", "name": cover["name"], "services": cover_buttons(cover)})
 for projector in devices.get("projector", []):
     base = f"bifrost/projector/{projector['id']}"
     config["accessories"].append({

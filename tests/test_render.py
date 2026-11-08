@@ -34,14 +34,35 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(fan["topics"], {"setOn": "bifrost/outlet/fan/set", "getOn": "bifrost/outlet/fan/state"})
         self.assertNotIn("3333", json.dumps(config))  # the codes stay with the hub
 
-    def test_cover_is_a_window_covering(self):
+    def test_cover_is_one_accessory_with_the_dashboard_buttons(self):
         _, out, config = self.render()
         self.assertIn("2 outlet(s), 1 cover(s), 1 projector(s)", out)
         screen = config["accessories"][2]
-        self.assertEqual((screen["type"], screen["name"]), ("windowCovering", "Screen"))
-        self.assertEqual(screen["topics"]["setTargetPosition"], "bifrost/cover/screen/set")
-        self.assertEqual(screen["topics"]["getPositionState"], "bifrost/cover/screen/state")
+        self.assertEqual((screen["type"], screen["name"]), ("custom", "Screen"))
+        buttons = {s["name"]: s for s in screen["services"]}
+        self.assertEqual(list(buttons), ["Screen Close", "Screen Stop", "Screen Open", "Screen Up", "Screen Down",
+                                         "Screen Is rolled up", "Screen Is open"])
+        self.assertTrue(all(s["type"] == "switch" for s in screen["services"]))
         self.assertNotIn("5553", json.dumps(config))
+
+    def test_pushed_buttons_come_back_off_sending_nothing(self):
+        buttons = {s["name"]: s for s in self.render()[2]["accessories"][2]["services"]}
+        for name, topic, value in [("Close", "set", "CLOSE"), ("Stop", "set", "STOP"), ("Open", "set", "OPEN"),
+                                   ("Is rolled up", "declare", "0"), ("Is open", "declare", "100")]:
+            b = buttons[f"Screen {name}"]
+            self.assertEqual((b["topics"], b["onValue"], b["turnOffAfterms"]),
+                             ({"setOn": f"bifrost/cover/screen/{topic}"}, value, 1000))
+            self.assertNotIn("offValue", b)
+
+    def test_up_and_down_stay_on_while_the_screen_moves_that_way(self):
+        buttons = {s["name"]: s for s in self.render()[2]["accessories"][2]["services"]}
+        for name, key, moving in [("Up", "UP", "DECREASING"), ("Down", "DOWN", "INCREASING")]:
+            b = buttons[f"Screen {name}"]
+            self.assertEqual((b["onValue"], b["offValue"], b["topics"]["setOn"]), (key, "STOP", "bifrost/cover/screen/press"))
+            self.assertNotIn("turnOffAfterms", b)
+            get = b["topics"]["getOn"]
+            self.assertEqual(get["topic"], "bifrost/cover/screen/state")
+            self.assertEqual(get["apply"], f"return message == '{moving}' ? '{key}' : 'STOP';")
 
     def test_projector_is_a_television_with_its_apps(self):
         _, out, config = self.render()
