@@ -883,6 +883,20 @@ class HealthTest(unittest.TestCase):
         self.check(self.NIGHT)
         self.assertEqual(self.adb.calls, [])
 
+    def test_close_stops_the_apps_in_one_command_but_those_the_projector_keeps(self):
+        hub.projector_command("projector", close=["com.netflix.ninja", "com.jmgo.overseas.atmosphere", "com.jmgo.hippo",
+                                                  "org.videolan.vlc", "com.netflix.ninja", "com.android.tv.settings"])
+        time.sleep(0.3)
+        self.assertEqual(self.adb.actions(), ["shell am force-stop com.netflix.ninja; am force-stop org.videolan.vlc"])
+
+    def test_close_with_nothing_closable_runs_nothing(self):
+        hub.projector_command("projector", close=["com.jmgo.hippo", "com.android.vending"])
+        time.sleep(0.3)
+        self.assertEqual(self.adb.actions(), [])
+
+    def test_the_vital_process_is_never_closed_even_with_nothing_kept(self):
+        self.assertEqual(hub.closable({"vital": "com.jmgo.hippo"}, ["com.jmgo.hippo", "com.jmgo.update"]), ["com.jmgo.update"])
+
     def test_focus_and_restart_on_demand(self):
         hub.projector_command("projector", focus=True)
         hub.projector_command("projector", restart=True)
@@ -1204,10 +1218,14 @@ class WebTest(unittest.TestCase):
                                                                      '{"press": "up"} or {"declare": 0}'})),
                 ("/api/projectors/projector", '{"app": 3}', (400, {"error": 'expected {"on": true}, {"key": "HOME"}, '
                                                                            '{"app": "<package>"}, {"tap": [0.5, 0.5]}, '
-                                                                           '{"focus": true} or {"restart": true}'})),
+                                                                           '{"focus": true}, {"restart": true} or {"close": ["<package>"]}'})),
                 ("/api/projectors/projector", '{"focus": false}', (400, {"error": 'expected {"on": true}, {"key": "HOME"}, '
                                                                                  '{"app": "<package>"}, {"tap": [0.5, 0.5]}, '
-                                                                                 '{"focus": true} or {"restart": true}'})),
+                                                                                 '{"focus": true}, {"restart": true} or {"close": ["<package>"]}'})),
+                *(("/api/projectors/projector", json.dumps({"close": close}), (400, {"error": 'expected {"on": true}, {"key": "HOME"}, '
+                                                                                         '{"app": "<package>"}, {"tap": [0.5, 0.5]}, '
+                                                                                         '{"focus": true}, {"restart": true} or {"close": ["<package>"]}'}))
+                  for close in ([], ["com.netflix.ninja; reboot"], "com.netflix.ninja", ["x"] * (hub.MAX_CLOSE + 1))),
                 ("/api/lamps/fan", '{"on": true}', (404, {"error": "unknown outlet"})),
                 ("/api/outlets", '{"on": true}', (404, {"error": "unknown outlet"})),
                 ("/api/outlets/fan/x", '{"on": true}', (404, {"error": "unknown outlet"})),
@@ -1224,14 +1242,14 @@ class WebTest(unittest.TestCase):
         hub.projector_command = lambda pid, **kw: orders.append((pid, kw))
         try:
             for body in ({"on": False}, {"focus": True}, {"restart": True}, {"app": "home"}, {"app": "com.netflix.ninja"},
-                         {"tap": [1, 0.5]}, {"key": "DPAD_UP"}):
+                         {"tap": [1, 0.5]}, {"key": "DPAD_UP"}, {"close": ["com.netflix.ninja", "org.videolan.vlc"]}):
                 with self.subTest(body=body):
                     self.assertEqual(self.post("/api/projectors/projector", json.dumps(body)), (202, {"id": "projector", **body}))
             hub.conn = None  # adb, not the broker
             self.assertEqual(self.post("/api/projectors/projector", '{"on": true}')[0], 202)
         finally:
             hub.projector_command = real
-        self.assertEqual(len(orders), 8)
+        self.assertEqual(len(orders), 9)
         self.assertEqual(orders[5], ("projector", {"tap": [1, 0.5]}))
 
     def test_post_cover_without_the_broker_or_with_it_gone(self):

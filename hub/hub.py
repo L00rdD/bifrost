@@ -21,7 +21,9 @@ status of the whole thing for the d-mediaserver home page.
   bifrost/projector/<id>/state  ON / OFF, /app  <package>, home or screensaver  <- retained, polled every 5 s
   POST :8582/api/projectors/<id>       -> {"on": true}, {"key": "HOME"}, {"app": "<package>"},
                                           {"tap": [x, y]} (0-1 across the screen, from the top left),
-                                          {"focus": true} (the lens focuses again) or {"restart": true}
+                                          {"focus": true} (the lens focuses again), {"restart": true} or
+                                          {"close": ["<package>", ...]} (those apps stopped, all at once:
+                                          never the vital one nor those the projector keeps)
   GET :8582/api/projectors/<id>/screen.mjpg  -> what the projector shows, as Vysor would (MJPEG)
 
 The codes live in outlets.toml only. 433/receive carries both the remote's presses and
@@ -111,6 +113,7 @@ MIN_UPTIME = 3 * 3600    # s: a projector up for less needs no nightly restart
 # adb shell goes through a shell on the projector: only these ever reach it from a payload
 KEY_RE = re.compile(r"[A-Z][A-Z0-9_]{0,39}")
 PACKAGE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+")
+MAX_CLOSE = 200     # apps one close may stop: one adb command
 SCRCPY_SERVER = os.environ.get("SCRCPY_SERVER", "/opt/scrcpy-server.jar")  # from the Dockerfile
 SCRCPY_VERSION = os.environ.get("SCRCPY_VERSION", "5.0.1")  # the server refuses any other client version
 FFMPEG = os.environ.get("FFMPEG", "ffmpeg")
@@ -147,6 +150,8 @@ for _p in PROJECTORS:  # these end up in shell commands
     for _k in ("vital", "focus"):
         if _k in _p and not PACKAGE_RE.fullmatch(_p[_k]):
             raise SystemExit(f"projector {_p['id']}: {_k} = {_p[_k]!r} is no package or action name")
+    if not isinstance(_p.get("keep", []), list) or not all(isinstance(k, str) and k for k in _p.get("keep", [])):
+        raise SystemExit(f"projector {_p['id']}: keep = {_p['keep']!r}, expected a list of package name beginnings")
     if "reboot_at" in _p and not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", _p["reboot_at"]):
         raise SystemExit(f"projector {_p['id']}: reboot_at = {_p['reboot_at']!r}, expected HH:MM")
 pokes = {p["id"]: threading.Event() for p in PROJECTORS}      # look at the projector now
@@ -772,10 +777,12 @@ def screen_size(projector: dict) -> tuple[int, int]:
 
 
 def projector_command(pid: str, on: bool | None = None, key: str | None = None, app: str | None = None,
-                      tap: tuple[float, float] | None = None, focus: bool = False, restart: bool = False) -> None:
+                      tap: tuple[float, float] | None = None, focus: bool = False, restart: bool = False,
+                      close: list[str] | None = None) -> None:
     """Runs one order in the background (adb takes a second or two), then looks again.
-    focus: the lens focuses again, as after the screen came down; restart: adb reboot, back asleep if it was.
-    key and app must have passed KEY_RE and PACKAGE_RE (or be HOME): they end up in a shell command."""
+    focus: the lens focuses again, as after the screen came down; restart: adb reboot, back asleep if it was;
+    close: those apps stopped, as from the settings' Force stop, but the ones the projector needs.
+    key, app and close must have passed KEY_RE and PACKAGE_RE (or be HOME): they end up in a shell command."""
     projector = PROJECTOR_BY_ID[pid]
 
     with lock:
@@ -811,8 +818,11 @@ def projector_command(pid: str, on: bool | None = None, key: str | None = None, 
                 power()
             with adb_locks[pid]:
                 _order(projector, key, app, tap, focus)
+                if close:
+                    _close(projector, close)
             if not tap:  # a tap is no news
-                log.info("%s -> %s", pid, "ON" if on else "OFF" if on is False else "focus" if focus else key or app)
+                log.info("%s -> %s", pid, "ON" if on else "OFF" if on is False else "focus" if focus
+                         else "close" if close else key or app)
         except OSError as e:
             log.warning("%s: %s", pid, e)
         pokes[pid].set()
@@ -832,6 +842,20 @@ def _order(projector: dict, key: str | None, app: str | None, tap: tuple[float, 
         adb(projector, "shell", f"input keyevent KEYCODE_{key or 'HOME'}")
     elif app:
         adb(projector, "shell", f"monkey -p {app} -c android.intent.category.LEANBACK_LAUNCHER 1")
+
+
+def closable(projector: dict, packages: list[str]) -> list[str]:
+    """The apps of packages that may be stopped: neither the vital process nor one the projector
+    keeps (keep: the beginnings of their names, its maker's apps and services)."""
+    kept = tuple(projector.get("keep", ()))
+    return [p for p in dict.fromkeys(packages) if p != projector.get("vital") and not p.startswith(kept)]
+
+
+def _close(projector: dict, packages: list[str]) -> None:
+    """Stops those apps, in one adb command (am force-stop: their processes, services and alarms).
+    Under its adb lock."""
+    if apps := closable(projector, packages):
+        adb(projector, "shell", "; ".join(f"am force-stop {p}" for p in apps))
 
 
 def split_jpegs(buf: bytes) -> tuple[list[bytes], bytes]:
@@ -1282,6 +1306,10 @@ def _is_package(app) -> bool:
     return isinstance(app, str) and bool(PACKAGE_RE.fullmatch(app))
 
 
+def _is_packages(packages) -> bool:
+    return isinstance(packages, list) and 0 < len(packages) <= MAX_CLOSE and all(map(_is_package, packages))
+
+
 def _is_tap(tap) -> bool:
     return isinstance(tap, list) and len(tap) == 2 and all(type(v) in (int, float) and 0 <= v <= 1 for v in tap)
 
@@ -1291,7 +1319,8 @@ def _projector_body(body: dict) -> None:
     if len(body) != 1 or not (isinstance(body.get("on"), bool)
                               or isinstance(body.get("key"), str) and KEY_RE.fullmatch(body["key"])
                               or body.get("focus") is True or body.get("restart") is True
-                              or body.get("app") == HOME or _is_package(body.get("app")) or _is_tap(body.get("tap"))):
+                              or body.get("app") == HOME or _is_package(body.get("app")) or _is_tap(body.get("tap"))
+                              or _is_packages(body.get("close"))):
         raise ValueError
 
 
@@ -1321,7 +1350,7 @@ SCHEDULE_EXPECTED = 'expected a list of up to 20 rules {"at": "HH:MM", "on": tru
 POST_EXPECTED = {"outlets": 'expected {"on": true} or {"on": false}',
                  "covers": 'expected {"position": 0-100}, {"stop": true}, {"press": "up"} or {"declare": 0}',
                  "projectors": 'expected {"on": true}, {"key": "HOME"}, {"app": "<package>"}, {"tap": [0.5, 0.5]}, '
-                               '{"focus": true} or {"restart": true}'}
+                               '{"focus": true}, {"restart": true} or {"close": ["<package>"]}'}
 
 
 class Handler(SimpleHTTPRequestHandler):

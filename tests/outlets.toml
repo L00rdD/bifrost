@@ -30,4 +30,5 @@ close_after = 0.3
 vital = "com.jmgo.hippo"
 focus = "com.jmgo.tof.autofocus"
 reboot_at = "04:30"
+keep = ["com.jmgo.", "com.android."]
 apps = { Netflix = "com.netflix.ninja", YouTube = "com.google.android.youtube.tv" }

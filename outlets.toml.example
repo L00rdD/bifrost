@@ -46,4 +46,5 @@ home = "Home"               # the HomeKit input of the launcher ("Home" if omitt
 vital = "com.jmgo.hippo"    # optional: drives the light; killed for memory, the picture is gone until a restart
 focus = "com.jmgo.tof.autofocus"  # optional: the broadcast that focuses the lens, sent once the screen is down
 reboot_at = "04:30"         # optional: a restart every night from then, once nobody watches
+keep = ["com.jmgo.", "com.mediatek.", "com.android."]  # optional: apps a close never stops (their names' beginnings)
 apps = { Netflix = "com.netflix.ninja", YouTube = "com.google.android.youtube.tv" }   # HomeKit inputs
