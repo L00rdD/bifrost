@@ -154,6 +154,7 @@ function skeleton(page) {
     make("main", {},
       make("div", { class: "sub", id: "updated" }, "loading…"),
       make("section", { id: "outlets" }),
+      make("section", { id: "outlet-tools" }),
       label, ...sections,
       make("section", { class: "panel" }, chain, make("p", { class: "last", id: "last" }, "no RF code yet"))),
     make("div", { class: "toast", id: "toast" })));

@@ -3,7 +3,7 @@ PI_DIR ?= ~/bifrost
 FQBN ?= esp8266:esp8266:nodemcuv2
 PORT ?= $(firstword $(wildcard /dev/cu.usbserial-* /dev/cu.wchusbserial*))
 
-.PHONY: deploy env logs sniff send adb flash ota monitor
+.PHONY: deploy env logs sniff send adb flash ota monitor desk desk-off
 
 deploy:          ## render the Homebridge config, copy the project to the Pi and (re)start everything
 	python3 render.py
@@ -16,6 +16,20 @@ deploy:          ## render the Homebridge config, copy the project to the Pi and
 
 env:             ## copy .env to the Pi (once, and after every change of .env)
 	scp .env $(PI):$(PI_DIR)/.env
+
+HUB ?= http://dpi.local:8582
+PRESENCE ?= desk
+DESK_AGENT = $(HOME)/Library/LaunchAgents/com.bifrost.desk.plist
+
+desk:            ## on the Mac at the desk: tell the hub, from now on and at every login, whether someone uses it
+	sed -e 's|@DESK_PY@|$(CURDIR)/desk/desk.py|g' -e 's|@HUB@|$(HUB)|g' -e 's|@PRESENCE@|$(PRESENCE)|g' \
+	    desk/com.bifrost.desk.plist > $(DESK_AGENT)
+	-launchctl bootout gui/$$(id -u) $(DESK_AGENT) 2>/dev/null
+	launchctl bootstrap gui/$$(id -u) $(DESK_AGENT)
+
+desk-off:        ## stop telling the hub: the outlet goes off after away, as when the Mac sleeps
+	-launchctl bootout gui/$$(id -u) $(DESK_AGENT)
+	rm -f $(DESK_AGENT)
 
 logs:
 	ssh $(PI) 'cd $(PI_DIR) && docker compose logs -f --tail 100'

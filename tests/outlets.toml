@@ -32,3 +32,9 @@ focus = "com.jmgo.tof.autofocus"
 reboot_at = "04:30"
 keep = ["com.jmgo.", "com.android."]
 apps = { Netflix = "com.netflix.ninja", YouTube = "com.google.android.youtube.tv" }
+
+[[presence]]
+id = "desk"
+name = "Desk"
+outlet = "fan"
+away = 900

@@ -1,6 +1,7 @@
 // The dashboard: paints /api/status.json every 5 s (every second while something moves) and sends
 // the switches, the cover's and the projector's orders as POSTs to the hub, and each outlet's
-// schedule (on or off at a time of day, on the days chosen) as a PUT.
+// schedule (on or off at a time of day, on the days chosen) as a PUT. Outlets are added, renamed
+// and removed here too, then Homebridge updated for the Home app to have them.
 const $ = (sel, root = document) => root.querySelector(sel);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
 const ago = (iso) => {
@@ -37,8 +38,13 @@ function card(o) {
     const plan = el("button", "plan");
     plan.title = "the schedule: on or off at a time of day";
     plan.setAttribute("aria-expanded", "false");
-    plan.addEventListener("click", () => (c.querySelector(".editor") ? closeEditor(c) : openEditor(c, o.id)));
-    info.append(el("h2"), el("p", "when"), plan);
+    plan.addEventListener("click", () => toggleEditor(c, "plan", () => openEditor(c, o.id)));
+    const title = el("div", "title"), rename = el("button", "rename", "✎");
+    rename.title = "rename";
+    rename.setAttribute("aria-label", "rename");
+    rename.addEventListener("click", () => toggleEditor(c, "rename", () => openRename(c, o.id)));
+    title.append(el("h2"), rename);
+    info.append(title, el("p", "when"), plan);
     const sw = el("button", "switch");
     sw.setAttribute("role", "switch");
     sw.append(el("span", "knob"));
@@ -89,6 +95,31 @@ function closeEditor(c) {
   $(".plan", c).setAttribute("aria-expanded", "false");
 }
 
+// One editor at a time on a card: its button closes it, the other's replaces it
+function toggleEditor(c, kind, open) {
+  const was = c.querySelector(".editor")?.dataset.kind;
+  closeEditor(c);
+  if (was !== kind) open();
+}
+
+function actions(...buttons) {
+  const row = el("div", "actions");
+  for (const [label, cls, fn] of buttons) {
+    const b = el("button", cls, label);
+    b.type = "button";
+    b.addEventListener("click", fn);
+    row.append(b);
+  }
+  return row;
+}
+
+function field(label, value, cls) {
+  const input = el("input", cls);
+  Object.assign(input, { type: "text", value, required: true });
+  input.setAttribute("aria-label", label);
+  return input;
+}
+
 // The editor works on a copy of the rules; Save sends them all, the hub applies the one in force at once
 function openEditor(c, id) {
   const rules = (status.outlets.find((x) => x.id === id)?.schedule || []).map((r) => ({ ...r, days: [...r.days] }));
@@ -98,16 +129,10 @@ function openEditor(c, id) {
     if (!rules.length) list.append(el("p", "empty", "No rule: add one, the outlet then follows the clock."));
   };
   draw();
-  const actions = el("div", "actions");
-  for (const [label, cls, fn] of [["+ rule", "add", () => { rules.push({ at: "08:00", on: true, days: [...ALL_DAYS] }); draw(); }],
-                                  ["Cancel", "cancel", () => closeEditor(c)], ["Save", "save", () => saveSchedule(c, id, rules)]]) {
-    const b = el("button", cls, label);
-    b.type = "button";
-    b.addEventListener("click", fn);
-    actions.append(b);
-  }
+  editor.dataset.kind = "plan";
   editor.append(el("p", "hint", "Each rule switches the outlet at its time on the days lit. A rule whose time has passed today applies as soon as it is saved; switched by hand, the outlet stays so until the next rule."),
-                list, actions);
+                list, actions(["+ rule", "add", () => { rules.push({ at: "08:00", on: true, days: [...ALL_DAYS] }); draw(); }],
+                              ["Cancel", "cancel", () => closeEditor(c)], ["Save", "save", () => saveSchedule(c, id, rules)]));
   c.append(editor);
   $(".plan", c).setAttribute("aria-expanded", "true");
 }
@@ -160,6 +185,113 @@ async function saveSchedule(c, id, rules) {
   }
   closeEditor(c);
   load();
+}
+
+// ---------- the outlets themselves: renamed, added, removed, then Homebridge updated ----------
+function openRename(c, id) {
+  const o = status.outlets.find((x) => x.id === id);
+  const editor = el("div", "editor"), name = field("name", o.name, "name");
+  editor.dataset.kind = "rename";
+  const buttons = [["Cancel", "cancel", () => closeEditor(c)], ["Save", "save", () => editOutlet(c, id, "PATCH", { name: name.value })]];
+  if (o.added) buttons.unshift(["Remove", "remove", () => editOutlet(c, id, "DELETE")]);
+  editor.append(el("p", "hint", "Its schedule stays. The Home app gets the new name as a new accessory, once HomeKit is updated: put it back in its room."),
+                name, actions(...buttons));
+  c.append(editor);
+}
+
+async function editOutlet(c, id, method, body) {
+  if (body && !body.name.trim()) return toast("a name, please");
+  if (method === "DELETE" && !confirm(`Remove ${id}? Its schedule goes with it.`)) return;
+  try {
+    await send(`/api/outlets/${encodeURIComponent(id)}`, method, body);
+  } catch (e) {
+    flash(c, "failed");
+    return toast(`${id}: ${e.message}`);
+  }
+  closeEditor(c);
+  load();
+}
+
+async function send(url, method, body) {
+  const r = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: body && JSON.stringify(body) });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status);
+  return r.json();
+}
+
+function openAdd() {
+  const tools = $("#outlet-tools");
+  if (tools.querySelector(".editor")) return closeAdd();
+  const editor = el("div", "editor adder"), name = field("name", "", "name");
+  name.placeholder = "Name, as the Home app shows it";
+  const code = (label) => {
+    const row = el("div", "code"), input = field(`${label} code`, "", label.toLowerCase());
+    input.inputMode = "numeric";
+    input.placeholder = `${label} code`;
+    const heard = el("button", "heard", "⤓ last heard");
+    heard.type = "button";
+    heard.title = `press the remote's ${label} button, then here`;
+    heard.addEventListener("click", () => {
+      const lc = status && status.last_code;
+      if (!lc || lc.via !== "remote") return toast(`press the remote's ${label} button first`);
+      input.value = lc.code;
+    });
+    row.append(input, heard);
+    return [row, input];
+  };
+  const [onRow, on] = code("ON"), [offRow, off] = code("OFF");
+  editor.append(el("p", "hint", "Press the remote's ON button: its code shows in the signal path below, take it with ⤓. The same for OFF."),
+                name, onRow, offRow,
+                actions(["Cancel", "cancel", closeAdd], ["Add", "save", () => addOutlet(name.value, on.value.trim(), off.value.trim())]));
+  tools.append(editor);
+  $(".add-outlet", tools).setAttribute("aria-expanded", "true");
+}
+
+function closeAdd() {
+  $("#outlet-tools .editor")?.remove();
+  $("#outlet-tools .add-outlet").setAttribute("aria-expanded", "false");
+}
+
+async function addOutlet(name, on, off) {
+  if (!name.trim() || !on || !off) return toast("a name and both codes, please");
+  try {
+    await send("/api/outlets", "POST", { name, on, off });
+  } catch (e) {
+    return toast(`${name}: ${e.message}`);
+  }
+  closeAdd();
+  load();
+}
+
+// The Home app has an outlet added or renamed once Homebridge restarts with it
+function paintHomekit(h) {
+  const box = $("#outlet-tools .homekit");
+  box.hidden = !h || !(h.pending || h.syncing || h.error);
+  if (box.hidden) return;
+  $("p", box).textContent = h.syncing ? "Updating Homebridge… the Home app is back in a few seconds."
+    : h.error ? `HomeKit not updated: ${h.error}` : "The Home app does not have these changes yet.";
+  $("button", box).disabled = h.syncing;
+}
+
+async function updateHomekit() {
+  try {
+    await send("/api/homebridge", "POST", {});
+  } catch (e) {
+    return toast(`Homebridge: ${e.message}`);
+  }
+  load();
+}
+
+function outletTools() {
+  const tools = $("#outlet-tools");
+  if (!tools || tools.querySelector(".add-outlet")) return;
+  const box = el("div", "homekit");
+  box.hidden = true;
+  box.append(el("p"), actions(["Update HomeKit", "save", updateHomekit]));
+  const add = el("button", "add-outlet", "+ outlet");
+  add.type = "button";
+  add.setAttribute("aria-expanded", "false");
+  add.addEventListener("click", openAdd);
+  tools.append(box, add);
 }
 
 const BEAMER = `<svg viewBox="0 0 150 96" aria-hidden="true">
@@ -425,6 +557,7 @@ function paint(s) {
   $("#updated").textContent = "433 MHz ⇄ MQTT ⇄ HomeKit · updated " + new Date(s.updated_at).toLocaleTimeString();
   paintChain(s);
   paintOutlets(s.outlets);
+  paintHomekit(s.homekit);
   paintCinema(s.covers || [], s.projectors || []);
   paintLastCode(s.last_code);
 }
@@ -437,7 +570,10 @@ function paintChain(s) {
 }
 
 function paintOutlets(outlets) {
-  if (!outlets.length) $("#outlets").replaceChildren(el("p", "empty", "No outlet yet: add one to outlets.toml."));
+  if (!outlets.length) $("#outlets").replaceChildren(el("p", "empty none", "No outlet yet: add one below."));
+  else $("#outlets .none")?.remove();
+  const ids = new Set(outlets.map((o) => o.id));  // removed, here or elsewhere
+  for (const c of document.querySelectorAll("#outlets .outlet")) if (!ids.has(c.dataset.id)) c.remove();
   for (const o of outlets) {
     const p = pending.get(o.id);
     if (p && o.on === p.want && o.at && new Date(o.at) >= p.since - 1000) {
@@ -478,7 +614,8 @@ async function load() {
     $("#updated").textContent = "the hub does not answer, retrying…";
   }
   // every second while a cover moves, so its drawing follows it
-  load.next = setTimeout(load, status && ((status.covers || []).some((c) => c.moving) || projectorPending.size) ? 1000 : 5000);
+  load.next = setTimeout(load, status && ((status.covers || []).some((c) => c.moving) || projectorPending.size
+                                          || status.homekit?.syncing) ? 1000 : 5000);
 }
 
 async function toggle(id) {
@@ -515,5 +652,6 @@ function fail(o, message) {
   toast(message);
 }
 
+outletTools();
 load();
 document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });

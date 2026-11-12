@@ -73,7 +73,7 @@ services:
       - ./outlets.toml:/app/outlets.toml:ro
       - ./dashboard:/app/dashboard:ro
       - ./data/adb:/root/.android            # the hub's adb key, allowed once on the projector
-      - ./data/hub:/data                     # the outlets' schedules, set from the dashboard
+      - ./data/hub:/data                     # the outlets' schedules, and those added or renamed, from the dashboard
     depends_on:
       - mosquitto
     healthcheck:

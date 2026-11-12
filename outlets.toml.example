@@ -48,3 +48,12 @@ focus = "com.jmgo.tof.autofocus"  # optional: the broadcast that focuses the len
 reboot_at = "04:30"         # optional: a restart every night from then, once nobody watches
 keep = ["com.jmgo.", "com.mediatek.", "com.android."]  # optional: apps a close never stops (their names' beginnings)
 apps = { Netflix = "com.netflix.ninja", YouTube = "com.google.android.youtube.tv" }   # HomeKit inputs
+
+# Someone at the desk: desk/desk.py on the Mac (make desk) tells how long its keyboard and mouse
+# have been idle. Fresh use turns the outlet on, `away` without any turns it off.
+#   POST :8582/api/presences/<id>  {"idle": 12.5}
+[[presence]]
+id = "desk"
+name = "Desk"
+outlet = "torii"            # an [[outlet]] above
+away = 900                  # s idle before the outlet goes off (900 if omitted)

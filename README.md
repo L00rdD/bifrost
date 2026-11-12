@@ -27,6 +27,7 @@ and talks to the hub:
 | `bifrost/projector/<id>/set`, `/key`, `/app/set` | `ON` / `OFF`, an Android key (`HOME`, `DPAD_UP`…), an app package or `home` (the HOME key) | the hub drives the projector over adb |
 | `bifrost/projector/<id>/state`, `/app` | `ON` / `OFF`, the app in front (`home` for the launcher, `screensaver`), retained | from the hub's look at the projector every 5 s |
 | `PUT :8582/api/outlets/<id>/schedule` | `[{"at": "08:30", "on": true, "days": [1, 2, 3, 4, 5]}, …]` | the outlet's schedule, from the dashboard: on or off at a time of day, on the days given (1 = Monday, all if omitted). Kept in `data/hub/schedules.json`; the rule in force applies at once |
+| `POST :8582/api/presences/<id>` | `{"idle": 12.5}` | how long the desk's keyboard and mouse have been idle, from `desk/desk.py` on the Mac: the hub turns the presence's outlet on and off |
 | `bifrost/cover/<id>/position`, `/target`, `/state` | `0`-`100`, `0`-`100`, `INCREASING` / `DECREASING` / `STOPPED`, retained | where the hub reckons the cover is, for HomeKit and the hub's next start |
 
 Retained means the broker keeps the last state: Homebridge gets it back as soon as it
@@ -87,6 +88,27 @@ The POST only takes JSON and has no CORS header, so a page from another site can
 switch the outlets through a visitor's browser. It has no login: anyone on the home
 network can switch them, as with the remote.
 
+## Someone at the desk
+
+The basketball neon lights up with whoever sits at the desk, and goes off 15 minutes after the
+last key or mouse move. `desk/desk.py` runs on the Mac (launchd, at every login): every 2 s it reads
+the idle time of the keyboard, mouse and trackpad, and tells the hub once a minute, or at once when
+the desk is used again after a minute or more. No permission to give, it never sees the keys.
+
+The hub turns the `[[presence]]`'s outlet on at the first fresh use (idle under a minute) with
+nobody seen there, and off once `away` (900 s) went by without any, the Mac asleep or shut down
+included: it then says nothing, which is enough. Only those two moments switch the outlet: turned
+off by hand at the desk, the neon stays off until the next comeback. A schedule still applies on top.
+
+```sh
+make desk        # on the Mac: install and start the agent (HUB=http://dpi.local:8582 PRESENCE=desk)
+make desk-off    # remove it
+```
+
+Away from home (at work), `dpi.local` answers nowhere: nothing is told, nothing switches. Its
+errors (the hub out of reach) go to `/tmp/bifrost-desk.log`, each one once until the hub answers again. `/api/status.json` tells, under
+`presences`, whether someone is there and how long the desk has been idle.
+
 ## The projector's screen
 
 The projector card's **Screen** button shows what the projector shows, live, as Vysor
@@ -105,6 +127,25 @@ python3 -m unittest discover -s tests -t .
 
 ## Adding an RF outlet
 
+From the dashboard (`http://dpi.local:8582`), with no deploy:
+
+1. "+ outlet", a name, then press the remote's ON button: its code shows in the
+   signal path, "⤓ last heard" takes it. The same for OFF.
+2. "Update HomeKit" in the banner that shows up: the hub writes the outlet into
+   Homebridge's config through the Homebridge UI (`HB_UI_USER`, `HB_UI_PASS` of
+   `.env`, the UI's login) and restarts it. The Home app has it a few seconds later.
+
+The pencil next to an outlet's name renames it, then "Update HomeKit" the same
+way: the Home app gets it as a new accessory (Homebridge knows its accessories by
+name), to put back in its room. Its id, topics and schedule stay. Only the outlets
+added from the dashboard can be removed there; those of `outlets.toml` stay in it.
+
+These are kept on the Pi in `data/hub/outlets.json`, on top of `outlets.toml`, not
+in the repo. `make deploy` puts back the Homebridge config of `outlets.toml` alone,
+and the hub, as it starts, gives Homebridge the dashboard's outlets again.
+
+Or by hand, in `outlets.toml`:
+
 1. `make sniff`, then press the remote's ON and OFF buttons: the codes show up on
    `433/receive`, with their protocol on `433/receive/raw`.
 2. Check the outlet answers: `make send CODE=<on code>`.
@@ -119,7 +160,8 @@ sends. The outlet itself may still miss one, out of range.
 
 The repo is the source of truth for the Homebridge config: `make deploy`
 overwrites the one on the Pi, so edits made in the Homebridge UI's config editor
-are lost at the next deploy (the accessories come from `outlets.toml`). Plugins installed from the UI stay.
+are lost at the next deploy (the accessories come from `outlets.toml`, and the
+dashboard's outlets from the hub). Plugins installed from the UI stay.
 
 ## Adding a cover (projection screen)
 

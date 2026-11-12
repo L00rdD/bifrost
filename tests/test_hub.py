@@ -20,6 +20,8 @@ os.environ["OUTLETS_FILE"] = str(ROOT / "tests" / "outlets.toml")
 os.environ["HOMEBRIDGE_HOST"] = "127.0.0.1"
 SCHEDULES = Path(tempfile.mkdtemp()) / "hub" / "schedules.json"
 os.environ["SCHEDULES_FILE"] = str(SCHEDULES)
+EDITS = SCHEDULES.parent / "outlets.json"
+os.environ["OUTLET_EDITS_FILE"] = str(EDITS)
 sys.path.insert(0, str(ROOT / "hub"))
 import hub  # noqa: E402
 
@@ -46,9 +48,16 @@ class FakeSock:
 
 def reset():
     with hub.lock:
+        hub.edits.update(added=[], names={})
+        hub._index(hub.edits)
+        hub.POST_KINDS["outlets"] = hub.BY_ID
+        hub.homekit.update(edits=0, synced=0, syncing=False, error=None, at=None)
+        EDITS.unlink(missing_ok=True)
         hub.state.update(broker=True, bridge_seen=None, last_code=None, outlets={})
         hub.schedules.clear()
         hub.applied.clear()
+        for d in hub.state["presences"].values():
+            d.update(present=False, last=None)
         for c in hub.state["covers"].values():
             if c["run"]:
                 c["run"].set()
@@ -599,6 +608,25 @@ class ProjectorTest(unittest.TestCase):
         time.sleep(0.45)
         self.assertEqual(self.moves, [])
 
+    def test_on_at_start_with_the_screen_up_brings_it_down(self):
+        # the hub restarted while the projector was off and out of reach; it is on at the first answer
+        with hub.lock:
+            hub.state["covers"]["screen"]["pos"] = 0.0
+        hub.projector_seen("projector", None, None, "adb: no answer in 10 s")
+        with self.assertLogs("hub", "INFO") as logs:
+            self.on()
+        self.assertEqual((self.moves, self.focuses), ([("screen", 100)], ["projector"]))
+        self.assertIn("INFO:hub:projector on at the first look, the screen rolled up: it comes down", logs.output)
+
+    def test_on_at_start_with_the_screen_down_or_unknown_leaves_it(self):
+        for pos in (100.0, 40.0, None):  # unknown: finding it would roll it up in the middle of a film
+            with self.subTest(pos=pos):
+                with hub.lock:
+                    hub.state["covers"]["screen"]["pos"] = pos
+                    hub.state["projectors"]["projector"].update(on=None, known=None, app=None)
+                self.on()
+                self.assertEqual(self.moves, [])
+
     def test_unreachable_between_off_and_on_still_moves_the_screen(self):
         with hub.lock:
             hub.state["covers"]["screen"]["pos"] = 0.0
@@ -1072,6 +1100,72 @@ class ScheduleTest(unittest.TestCase):
         self.assertEqual(outlets["fan"]["next"], {"at": expected[0].astimezone().isoformat(timespec="minutes"), "on": expected[1]["on"]})
 
 
+class PresenceTest(unittest.TestCase):
+    def setUp(self):
+        reset()
+        self.sock = FakeSock()
+        hub.conn = self.sock
+
+    def tearDown(self):
+        hub.conn = None
+
+    def sent(self):
+        return [p for t, p, _ in self.sock.published if t == "433/send"]
+
+    def test_someone_fresh_turns_the_outlet_on_once(self):
+        self.assertTrue(hub.seen("desk", 2, at=1000))
+        self.assertEqual(self.sent(), ["3333"])
+        self.assertTrue(hub.seen("desk", 0, at=1060))  # still there: nothing more, an off by hand stays off
+        self.assertTrue(hub.seen("desk", 50, at=1120))
+        self.assertEqual(self.sent(), ["3333"])
+
+    def test_nobody_fresh_switches_nothing(self):
+        # the hub just started, the desk was used 5 min ago: whoever turned the outlet off meant it
+        self.assertFalse(hub.seen("desk", 300, at=1000))
+        self.assertFalse(hub.seen("desk", hub.FRESH, at=1000))
+        hub.leave(at=5000)
+        self.assertEqual(self.sent(), [])
+
+    def test_away_turns_it_off_after_15_min_then_back_on(self):
+        hub.seen("desk", 0, at=1000)
+        hub.seen("desk", 40, at=1060)  # last key at 1020
+        hub.leave(at=1919)
+        self.assertEqual(self.sent(), ["3333"])
+        hub.leave(at=1920)
+        hub.leave(at=1930)
+        self.assertEqual(self.sent(), ["3333", "4444"])
+        self.assertFalse(hub.seen("desk", 1000, at=2020))  # the Mac's minute beat, still away
+        self.assertTrue(hub.seen("desk", 1, at=2030))
+        self.assertEqual(self.sent(), ["3333", "4444", "3333"])
+
+    def test_without_the_broker_it_tries_again(self):
+        hub.conn = None
+        self.assertFalse(hub.seen("desk", 0, at=1000))
+        hub.conn = self.sock
+        self.assertTrue(hub.seen("desk", 1, at=1060))
+        hub.conn = None
+        hub.leave(at=2000)
+        self.assertTrue(hub.state["presences"]["desk"]["present"])
+        hub.conn = self.sock
+        hub.leave(at=2010)
+        self.assertEqual(self.sent(), ["3333", "4444"])
+        self.assertFalse(hub.state["presences"]["desk"]["present"])
+
+    def test_a_broken_broker_is_tried_again(self):
+        class Broken:
+            def sendall(self, data):
+                raise OSError("gone")
+        hub.conn = Broken()
+        self.assertFalse(hub.seen("desk", 0, at=1000))
+
+    def test_snapshot_tells_who_is_there(self):
+        self.assertEqual(hub.snapshot()["presences"], [{"id": "desk", "name": "Desk", "outlet": "fan", "present": False, "idle": None}])
+        hub.seen("desk", 30)
+        desk = hub.snapshot()["presences"][0]
+        self.assertTrue(desk["present"])
+        self.assertIn(desk["idle"], (30, 31))
+
+
 class WebTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -1202,6 +1296,17 @@ class WebTest(unittest.TestCase):
         self.assertEqual(self.sock.published, [])
         self.assertEqual(hub.schedules, {})
 
+    def test_post_tells_the_presence(self):
+        self.assertEqual(self.post("/api/presences/desk", '{"idle": 1.5}'), (200, {"id": "desk", "present": True}))
+        self.assertEqual(self.sock.published, [("433/send", "3333", False)])
+        expected = (400, {"error": 'expected {"idle": <s since the last key or mouse move>}'})
+        for body in ('{"idle": -1}', '{"idle": "2"}', '{"idle": true}', '{"idle": 1, "x": 2}', "{}", "[]", '{"idle": 1e10}'):
+            with self.subTest(body=body):
+                self.assertEqual(self.post("/api/presences/desk", body), expected)
+        self.assertEqual(self.post("/api/presences/nope", '{"idle": 1}'), (404, {"error": "unknown presence"}))
+        hub.conn = None
+        self.assertEqual(self.post("/api/presences/desk", '{"idle": 1}'), (200, {"id": "desk", "present": True}))
+
     def test_post_has_no_cors(self):
         req = urllib.request.Request(self.url + "/api/outlets/fan", data=b'{"on": false}', method="POST",
                                      headers={"Content-Type": "application/json"})
@@ -1227,7 +1332,7 @@ class WebTest(unittest.TestCase):
                                                                                          '{"focus": true}, {"restart": true} or {"close": ["<package>"]}'}))
                   for close in ([], ["com.netflix.ninja; reboot"], "com.netflix.ninja", ["x"] * (hub.MAX_CLOSE + 1))),
                 ("/api/lamps/fan", '{"on": true}', (404, {"error": "unknown outlet"})),
-                ("/api/outlets", '{"on": true}', (404, {"error": "unknown outlet"})),
+                ("/api/outlets", '{"on": true}', (400, {"error": 'expected {"name": "Lamp", "on": "<code>", "off": "<code>"}'})),
                 ("/api/outlets/fan/x", '{"on": true}', (404, {"error": "unknown outlet"})),
                 ("/other/outlets/fan", '{"on": true}', (404, {"error": "unknown outlet"})),
                 ("/api/projectors/fan", '{"on": true}', (404, {"error": "unknown projector"})),
@@ -1273,6 +1378,312 @@ class WebTest(unittest.TestCase):
         for path in ("/../hub/hub.py", "/%2e%2e/outlets.toml", "/tests/"):
             with self.subTest(path=path), self.assertRaises(urllib.error.HTTPError):
                 urllib.request.urlopen(self.url + path, timeout=5)
+
+
+class FakeHomebridge(ThreadingHTTPServer):
+    """The Homebridge UI's API: login, the config editor, the restart. Keeps the calls as (method, path)."""
+
+    def __init__(self, config, password="pw"):
+        from http.server import BaseHTTPRequestHandler
+        self.config, self.password, self.calls = config, password, []
+        server = self
+
+        class Api(BaseHTTPRequestHandler):
+            def _answer(self, code, data=None):
+                body = b"" if data is None else json.dumps(data).encode()
+                self.send_response(code)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _body(self):
+                return json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"null")
+
+            def _route(self):
+                server.calls.append((self.command, self.path))
+                body = self._body()
+                if self.path == "/api/auth/login":
+                    ok = body == {"username": "admin", "password": server.password}
+                    return self._answer(201, {"access_token": "t"}) if ok else self._answer(401, {})
+                if self.headers.get("Authorization") != "Bearer t":
+                    return self._answer(401, {})
+                if self.path == "/api/config-editor" and self.command == "GET":
+                    return self._answer(200, server.config)
+                if self.path == "/api/config-editor":
+                    server.config = body
+                    return self._answer(201, body)
+                return self._answer(200)
+
+            do_GET = do_POST = do_PUT = _route
+
+            def log_message(self, *args):
+                pass
+
+        super().__init__(("127.0.0.1", 0), Api)
+        threading.Thread(target=self.serve_forever, daemon=True).start()
+
+
+class OutletEditTest(unittest.TestCase):
+    def setUp(self):
+        reset()
+        self.sock = FakeSock()
+
+    def test_an_added_outlet_is_switched_and_heard_as_the_others(self):
+        self.assertEqual(hub.add_outlet({"name": " Néon basket ", "on": "7771", "off": "7772"}),
+                         {"id": "neon-basket", "name": "Néon basket"})
+        hub.switch(self.sock, hub.BY_ID["neon-basket"], True)
+        hub.received(self.sock, "7772")
+        self.assertEqual(self.sock.published, [("433/send", "7771", False), ("bifrost/outlet/neon-basket/state", "OFF", True)])
+        neon = hub.snapshot()["outlets"][-1]
+        self.assertEqual((neon["id"], neon["name"], neon["on"], neon["added"]), ("neon-basket", "Néon basket", False, True))
+        self.assertFalse(hub.snapshot()["outlets"][0]["added"])
+        self.assertEqual(json.loads(EDITS.read_text()),
+                         {"added": [{"id": "neon-basket", "name": "Néon basket", "on": "7771", "off": "7772"}], "names": {}})
+        self.assertTrue(hub.snapshot()["homekit"]["pending"])
+
+    def test_ids_from_names(self):
+        hub.add_outlet({"name": "Néon basket", "on": "1", "off": "2"})
+        hub.add_outlet({"name": "Néon basket!", "on": "3", "off": "4"})
+        hub.add_outlet({"name": "!!!", "on": "5", "off": "6"})
+        self.assertEqual([o["id"] for o in hub.OUTLETS], ["terrarium", "fan", "neon-basket", "neon-basket-2", "outlet"])
+
+    def test_what_an_added_outlet_cannot_be(self):
+        for body, expected in (
+                ({"name": "fan", "on": "1", "off": "2"}, (409, "fan is taken")),
+                ({"name": "SCREEN", "on": "1", "off": "2"}, (409, "SCREEN is taken")),
+                ({"name": "Projector", "on": "1", "off": "2"}, (409, "Projector is taken")),
+                ({"name": "Lamp", "on": "3333", "off": "2"}, (409, "code 3333 already switches fan")),
+                ({"name": "Lamp", "on": "1", "off": "5551"}, (409, "code 5551 already switches screen")),
+                ({"name": "Lamp", "on": "1", "off": "1"}, (400, "two different decimal codes, ON and OFF (make sniff)")),
+                ({"name": "Lamp", "on": 1, "off": "2"}, (400, "two different decimal codes, ON and OFF (make sniff)")),
+                ({"name": "Lamp", "on": "1 188", "off": "2"}, (400, "two different decimal codes, ON and OFF (make sniff)")),
+                ({"name": " ", "on": "1", "off": "2"}, (400, "a name of 1 to 40 characters")),
+                ({"name": "x" * 41, "on": "1", "off": "2"}, (400, "a name of 1 to 40 characters")),
+                ({"name": "a\nb", "on": "1", "off": "2"}, (400, "a name of 1 to 40 characters")),
+                ({"name": None, "on": "1", "off": "2"}, (400, "a name of 1 to 40 characters")),
+                ({"name": "Lamp", "on": "1"}, (400, 'expected {"name": "Lamp", "on": "<code>", "off": "<code>"}')),
+                (["Lamp"], (400, 'expected {"name": "Lamp", "on": "<code>", "off": "<code>"}'))):
+            with self.subTest(body=body), self.assertRaises(hub.Refused) as e:
+                hub.add_outlet(body)
+            self.assertEqual((e.exception.status, str(e.exception)), expected)
+        self.assertEqual(len(hub.OUTLETS), 2)
+        self.assertFalse(EDITS.exists())
+
+    def test_renames(self):
+        hub.add_outlet({"name": "Lamp", "on": "1", "off": "2"})
+        self.assertEqual(hub.rename_outlet("fan", {"name": "Ventilo"}), {"id": "fan", "name": "Ventilo"})
+        self.assertEqual(hub.rename_outlet("lamp", {"name": "Lampe"}), {"id": "lamp", "name": "Lampe"})
+        self.assertEqual([o["name"] for o in hub.OUTLETS], ["Terrarium", "Ventilo", "Lampe"])
+        self.assertEqual(hub.BY_CODE["3333"], ("fan", True))
+        self.assertEqual(json.loads(EDITS.read_text())["names"], {"fan": "Ventilo"})
+        self.assertEqual(hub.rename_outlet("fan", {"name": "Fan"})["name"], "Fan")  # its name in outlets.toml again
+        self.assertEqual(json.loads(EDITS.read_text())["names"], {})
+        edits = hub.homekit["edits"]
+        hub.rename_outlet("fan", {"name": "Fan"})
+        self.assertEqual(hub.homekit["edits"], edits)  # the same name: nothing for Homebridge
+        hub.rename_outlet("fan", {"name": "FAN"})  # its own name, other case
+        for body in ({"name": "Terrarium"}, {"name": ""}, {"name": "x", "on": "1"}):
+            with self.subTest(body=body), self.assertRaises(hub.Refused):
+                hub.rename_outlet("fan", body)
+
+    def test_removes_only_what_was_added(self):
+        hub.add_outlet({"name": "Lamp", "on": "1", "off": "2"})
+        hub.set_schedule("lamp", [rule("23:59", False)])
+        hub.received(self.sock, "1")
+        self.assertEqual(hub.remove_outlet("lamp"), {"id": "lamp", "removed": True})
+        self.assertNotIn("lamp", hub.BY_ID)
+        self.assertNotIn("1", hub.BY_CODE)
+        self.assertNotIn("lamp", hub.schedules)
+        self.assertNotIn("lamp", hub.state["outlets"])
+        self.assertEqual(json.loads(EDITS.read_text())["added"], [])
+        with self.assertRaises(hub.Refused) as e:
+            hub.remove_outlet("fan")
+        self.assertEqual((e.exception.status, str(e.exception)), (409, "fan comes from outlets.toml: remove it there"))
+        hub.add_outlet({"name": "Desk lamp", "on": "1", "off": "2"})
+        real = hub.PRESENCES
+        hub.PRESENCES = [{"id": "desk", "outlet": "desk-lamp"}]
+        try:
+            with self.assertRaises(hub.Refused) as e:
+                hub.remove_outlet("desk-lamp")
+        finally:
+            hub.PRESENCES = real
+        self.assertEqual(str(e.exception), "desk-lamp is switched by a presence of outlets.toml")
+
+    def test_the_edits_file_at_the_start(self):
+        EDITS.write_text(json.dumps({"added": [{"id": "fan", "name": "Fan 2", "on": "1", "off": "2"},
+                                               {"id": "lamp", "name": "Lamp", "on": "5", "off": "6"}],
+                                     "names": {"terrarium": "Terra", "gone": "Gone"}}))
+        self.assertEqual(hub._load_edits(), {"added": [{"id": "lamp", "name": "Lamp", "on": "5", "off": "6"}],
+                                             "names": {"terrarium": "Terra"}})
+        EDITS.write_text("{not json")
+        self.assertEqual(hub._load_edits(), {"added": [], "names": {}})
+
+
+class HomebridgeTest(unittest.TestCase):
+    def setUp(self):
+        reset()
+        self.real = hub.HOMEBRIDGE, dict(hub.HB_LOGIN)
+        hub.HB_LOGIN.update(username="admin", password="pw")
+
+    def tearDown(self):
+        hub.HOMEBRIDGE = self.real[0]
+        hub.HB_LOGIN.update(self.real[1])
+
+    def homebridge(self, config, password="pw"):
+        api = FakeHomebridge(config, password)
+        self.addCleanup(api.server_close)
+        self.addCleanup(api.shutdown)
+        hub.HOMEBRIDGE = ("127.0.0.1", api.server_address[1])
+        return api
+
+    def test_the_outlets_replace_those_homebridge_has_where_they_were(self):
+        cover, tv = {"accessory": "mqttthing", "type": "custom", "name": "Screen"}, {"accessory": "mqttthing", "type": "television"}
+        old = hub.outlet_accessory({"id": "old", "name": "Old"})
+        config = {"bridge": {"pin": "1"}, "accessories": [cover, old, tv, hub.outlet_accessory({"id": "x", "name": "X"})]}
+        new = hub.homebridge_config(config, hub.OUTLETS)
+        self.assertEqual(new["bridge"], {"pin": "1"})
+        self.assertEqual([a["name"] for a in new["accessories"][1:3]], ["Terrarium", "Fan"])
+        self.assertEqual(new["accessories"][0], cover)
+        self.assertEqual(new["accessories"][3:], [tv])
+        self.assertEqual([a.get("name") for a in hub.homebridge_config({}, hub.OUTLETS)["accessories"]], ["Terrarium", "Fan"])
+
+    def test_render_and_the_hub_make_the_same_outlets(self):
+        # a deploy without edits: the hub finds nothing to change, Homebridge is not restarted twice
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            shutil.copy(ROOT / "render.py", tmp)
+            (tmp / "homebridge").mkdir()
+            shutil.copy(ROOT / "homebridge/config.template.json", tmp / "homebridge")
+            (tmp / ".env").write_text("MQTT_USER=u\nMQTT_PASS=p\nHB_USERNAME=0E:12:34:56:78:9A\nHB_PIN=123-45-678\n")
+            shutil.copy(ROOT / "tests/outlets.toml", tmp / "outlets.toml")
+            subprocess.run([sys.executable, "-I", str(tmp / "render.py")], check=True, capture_output=True)
+            rendered = json.loads((tmp / "homebridge/config.json").read_text())
+        real = hub.USER, hub.PASS
+        hub.USER, hub.PASS = "u", "p"
+        try:
+            self.assertEqual(hub.homebridge_config(rendered, hub.OUTLETS), rendered)
+        finally:
+            hub.USER, hub.PASS = real
+
+    def test_sync_writes_the_config_and_restarts_once_changed(self):
+        api = self.homebridge({"accessories": []})
+        hub.add_outlet({"name": "Lamp", "on": "1", "off": "2"})
+        self.assertTrue(hub.snapshot()["homekit"]["pending"])
+        self.assertTrue(hub.sync_homebridge())
+        self.assertEqual([a["name"] for a in api.config["accessories"]], ["Terrarium", "Fan", "Lamp"])
+        self.assertEqual(api.calls, [("POST", "/api/auth/login"), ("GET", "/api/config-editor"),
+                                     ("POST", "/api/config-editor"), ("PUT", "/api/server/restart")])
+        h = hub.snapshot()["homekit"]
+        self.assertEqual((h["pending"], h["syncing"], h["error"]), (False, False, None))
+        self.assertIsNotNone(h["at"])
+        api.calls.clear()
+        self.assertTrue(hub.sync_homebridge())
+        self.assertEqual(api.calls, [("POST", "/api/auth/login"), ("GET", "/api/config-editor")])  # no change, no restart
+
+    def test_sync_says_why_not(self):
+        self.homebridge({"accessories": []}, password="other")
+        hub.add_outlet({"name": "Lamp", "on": "1", "off": "2"})
+        self.assertFalse(hub.sync_homebridge())
+        h = hub.snapshot()["homekit"]
+        self.assertEqual((h["pending"], h["error"]), (True, "Homebridge said 401: wrong HB_UI_USER or HB_UI_PASS"))
+        hub.HOMEBRIDGE = ("127.0.0.1", 9)
+        self.assertFalse(hub.sync_homebridge())
+        self.assertTrue(hub.homekit["error"].startswith("Homebridge: "))
+        hub.HB_LOGIN["username"] = ""
+        self.assertFalse(hub.sync_homebridge())
+        self.assertEqual(hub.homekit["error"], "no Homebridge login: HB_UI_USER and HB_UI_PASS in .env, then make env and make deploy")
+
+    def test_one_sync_at_a_time(self):
+        with hub.hb_lock:
+            self.assertFalse(hub.sync_homebridge())
+
+    def test_after_a_start_with_edits_homebridge_gets_them(self):
+        api = self.homebridge({"accessories": []})
+        hub.homekit["synced"] = None
+        hub.homebridge_after_start()
+        self.assertEqual(len(api.config["accessories"]), 2)
+        self.assertEqual(hub.homekit["synced"], 0)
+        hub.homebridge_after_start()  # nothing left to give
+        self.assertEqual(len(api.calls), 4)
+
+    def test_after_a_start_it_tries_again(self):
+        hub.homekit["synced"] = None
+        hub.HOMEBRIDGE = ("127.0.0.1", 9)
+        sleeps, real = [], hub.time.sleep
+
+        def sleep(s):
+            sleeps.append(s)
+            api = self.homebridge({"accessories": []})  # Homebridge is up at last
+            self.assertTrue(api)
+
+        hub.time.sleep = sleep
+        try:
+            hub.homebridge_after_start()
+        finally:
+            hub.time.sleep = real
+        self.assertEqual(sleeps, [hub.HB_RETRY])
+        self.assertEqual(hub.homekit["synced"], 0)
+
+
+class OutletEditWebTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), hub.Handler)
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        cls.url = f"http://127.0.0.1:{cls.server.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def setUp(self):
+        reset()
+        self.sock = FakeSock()
+        hub.conn = self.sock
+
+    def tearDown(self):
+        hub.conn = None
+
+    def call(self, method, path, body=None, ctype="application/json"):
+        req = urllib.request.Request(self.url + path, data=None if body is None else body.encode(), method=method,
+                                     headers={"Content-Type": ctype})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def test_add_rename_remove(self):
+        self.assertEqual(self.call("POST", "/api/outlets", '{"name": "Lamp", "on": "71", "off": "72"}'),
+                         (201, {"id": "lamp", "name": "Lamp"}))
+        self.assertEqual(self.call("POST", "/api/outlets/lamp", '{"on": true}'), (202, {"id": "lamp", "on": True}))
+        self.assertEqual(self.sock.published, [("433/send", "71", False)])
+        self.assertEqual(self.call("PATCH", "/api/outlets/lamp", '{"name": "Lampe"}'), (200, {"id": "lamp", "name": "Lampe"}))
+        self.assertEqual(self.call("PATCH", "/api/outlets/fan", '{"name": "Lampe"}'), (409, {"error": "Lampe is taken"}))
+        self.assertEqual(self.call("DELETE", "/api/outlets/fan"), (409, {"error": "fan comes from outlets.toml: remove it there"}))
+        self.assertEqual(self.call("DELETE", "/api/outlets/lamp"), (200, {"id": "lamp", "removed": True}))
+        self.assertEqual(self.call("POST", "/api/outlets/lamp", '{"on": true}'), (404, {"error": "unknown outlet"}))
+
+    def test_edit_errors(self):
+        self.assertEqual(self.call("POST", "/api/outlets", "name=Lamp", "text/plain"), (415, {"error": "send JSON"}))
+        self.assertEqual(self.call("POST", "/api/outlets", "{nope"), (400, {"error": "send JSON"}))
+        self.assertEqual(self.call("PATCH", "/api/outlets/nope", '{"name": "x"}'), (404, {"error": "unknown outlet"}))
+        self.assertEqual(self.call("PATCH", "/api/outlets", '{"name": "x"}'), (404, {"error": "unknown outlet"}))
+        self.assertEqual(self.call("PATCH", "/api/outlets/fan", '{"name": "x"}', "text/plain"), (415, {"error": "send JSON"}))
+        self.assertEqual(self.call("DELETE", "/api/outlets/nope"), (404, {"error": "unknown outlet"}))
+        self.assertEqual(len(hub.OUTLETS), 2)
+
+    def test_homebridge_is_updated_on_demand(self):
+        done, real = threading.Event(), hub.sync_homebridge
+        hub.sync_homebridge = done.set
+        try:
+            self.assertEqual(self.call("POST", "/api/homebridge", "{}"), (202, {"syncing": True}))
+            self.assertTrue(done.wait(2))
+            self.assertTrue(hub.snapshot()["homekit"]["syncing"])
+            self.assertEqual(self.call("POST", "/api/homebridge", "{}", "text/plain"), (415, {"error": "send JSON"}))
+        finally:
+            hub.sync_homebridge = real
 
 
 if __name__ == "__main__":

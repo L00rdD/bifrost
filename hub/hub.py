@@ -6,8 +6,14 @@ status of the whole thing for the d-mediaserver home page.
   :8582/                               -> the dashboard (dashboard/)
   :8582/api/status.json                -> broker, Homebridge, RF bridge, outlets (CORS open)
   POST :8582/api/outlets/<id>          -> {"on": true} switches the outlet, as /set does
+  POST :8582/api/outlets                -> {"name": "Lamp", "on": "<code>", "off": "<code>"}: a new outlet,
+                                          kept in EDITS_FILE with the new names of outlets.toml's
+  PATCH :8582/api/outlets/<id>         -> {"name": "Lamp"}: renames it; DELETE removes one added so
+  POST :8582/api/homebridge            -> {}: Homebridge gets the outlets as they are, and restarts if they changed
   PUT  :8582/api/outlets/<id>/schedule -> [{"at": "08:30", "on": true, "days": [1-7]}, ...]: the outlet's
                                           schedule, kept in SCHEDULES_FILE and applied by the hub
+  POST :8582/api/presences/<id>        -> {"idle": 12.5}: s since the last key or mouse move at the desk,
+                                          from desk/desk.py on the Mac, every minute and as soon as it is used
 
   bifrost/cover/<id>/set     0-100 / OPEN / CLOSE / STOP -> moves the cover (0 = up, 100 = open)
   bifrost/cover/<id>/press   up / down / stop -> the button as on the remote; stop comes by itself
@@ -26,13 +32,22 @@ status of the whole thing for the d-mediaserver home page.
                                           never the vital one nor those the projector keeps)
   GET :8582/api/projectors/<id>/screen.mjpg  -> what the projector shows, as Vysor would (MJPEG)
 
-The codes live in outlets.toml only. 433/receive carries both the remote's presses and
+The codes live in outlets.toml, and in EDITS_FILE for the outlets added from the dashboard.
+Homebridge gets those through its UI's API (HB_UI_USER, HB_UI_PASS): the dashboard asks once
+its changes are made, and the hub at its start, a deploy having put back the outlets of
+outlets.toml alone. 433/receive carries both the remote's presses and
 every code the bridge sends, so the state follows whoever switched the outlet.
 
 A schedule is a few rules per outlet, set from the dashboard: on or off at a time of day, on the
 days of the week given (1 = Monday). Every 10 s the hub looks for the rule in force, the latest
 one that fell within the last 24 h, and applies it once: at its time, or as soon as the hub is
 back when it missed it. Switched by hand afterwards, the outlet stays so until the next rule.
+
+A presence (the desk) switches its outlet with whoever sits there: the Mac tells how long its
+keyboard and mouse have been idle; fresh use with nobody seen there turns the outlet on, and
+`away` (15 min) without any turns it off. Only those two moments switch: turned off by hand at
+the desk, the outlet stays off until the next comeback. The Mac asleep or gone says nothing, and
+the outlet goes off all the same.
 
 A cover (the projection screen) does not say where it is either: the hub sends up or down,
 then stop when the time measured for that distance is over, and follows the remote's
@@ -75,6 +90,9 @@ import subprocess
 import threading
 import time
 import tomllib
+import unicodedata
+import urllib.error
+import urllib.request
 from datetime import datetime, time as daytime, timedelta
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -82,18 +100,54 @@ from pathlib import Path
 BROKER = os.environ.get("MQTT_HOST", "mosquitto")
 USER, PASS = os.environ.get("MQTT_USER", ""), os.environ.get("MQTT_PASS", "")
 HOMEBRIDGE = (os.environ.get("HOMEBRIDGE_HOST", "host.docker.internal"), 8581)
+# the Homebridge UI's login: the hub puts the dashboard's outlets into its config through it
+HB_LOGIN = {"username": os.environ.get("HB_UI_USER", ""), "password": os.environ.get("HB_UI_PASS", "")}
+HB_TIMEOUT = 20  # s per call to the Homebridge UI
+HB_RETRY = 60    # s between two tries to give Homebridge the outlets after a start
 PORT = int(os.environ.get("STATUS_PORT", "8582"))
 DASHBOARD_DIR = Path(os.environ.get("DASHBOARD_DIR", Path(__file__).resolve().parent.parent / "dashboard"))
 BRIDGE_TIMEOUT = 60  # the bridge says "online" every 10 s
 CONFIG = tomllib.loads(Path(os.environ.get("OUTLETS_FILE", "/app/outlets.toml")).read_text())
-OUTLETS, COVERS = CONFIG.get("outlet", []), CONFIG.get("cover", [])
-BY_ID = {o["id"]: o for o in OUTLETS}
-BY_CODE = {str(o[k]): (o["id"], k == "on") for o in OUTLETS for k in ("on", "off")}
+TOML_OUTLETS, COVERS = CONFIG.get("outlet", []), CONFIG.get("cover", [])
+EDITS_FILE = Path(os.environ.get("OUTLET_EDITS_FILE", "/data/outlets.json"))  # the outlets added or renamed from the dashboard
+CODE_RE = re.compile(r"\d{1,10}")  # a decimal RF code, as 433/receive carries it
+MAX_NAME = 40
+
+
+def _load_edits() -> dict:
+    """The edits file: {"added": [{id, name, on, off}], "names": {id: name}}, the new names of
+    outlets.toml's. An added outlet whose id came into outlets.toml since is outlets.toml's.
+    Missing or unreadable, there is no edit."""
+    try:
+        data = json.loads(EDITS_FILE.read_text())
+    except (OSError, ValueError):
+        data = {}
+    toml = {o["id"] for o in TOML_OUTLETS}
+    return {"added": [o for o in data.get("added", []) if o["id"] not in toml],
+            "names": {oid: n for oid, n in data.get("names", {}).items() if oid in toml}}
+
+
+def _index(edits: dict) -> None:
+    """The outlets, outlets.toml's then the dashboard's, under their latest names, and their lookups."""
+    global OUTLETS, BY_ID, BY_CODE
+    OUTLETS = [{**o, "name": edits["names"].get(o["id"], o["name"])} for o in TOML_OUTLETS] + edits["added"]
+    BY_ID = {o["id"]: o for o in OUTLETS}
+    BY_CODE = {str(o[k]): (o["id"], k == "on") for o in OUTLETS for k in ("on", "off")}
+
+
+edits = _load_edits()
+_index(edits)
 SCHEDULES_FILE = Path(os.environ.get("SCHEDULES_FILE", "/data/schedules.json"))  # the outlets' schedules, set from the dashboard
 TIME_RE = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
 MAX_RULES = 20       # per outlet
 SCHEDULE_TICK = 10   # s between two looks at the clock
 ALL_DAYS = list(range(1, 8))
+PRESENCES = CONFIG.get("presence", [])
+PRESENCE_BY_ID = {d["id"]: d for d in PRESENCES}
+FRESH = 60  # s: idle for less, someone is there right now (the Mac tells every minute)
+for _d in PRESENCES:
+    if _d.get("outlet") not in BY_ID:
+        raise SystemExit(f"presence {_d['id']}: outlet = {_d.get('outlet')!r} is no outlet of outlets.toml")
 COVER_BY_ID = {c["id"]: c for c in COVERS}
 COVER_CODES = {str(c[k]): (c["id"], k) for c in COVERS for k in ("up", "down", "stop")}
 PROJECTORS = CONFIG.get("projector", [])
@@ -142,7 +196,9 @@ state = {"broker": False, "bridge_seen": None, "last_code": None, "outlets": {},
          "projectors": {p["id"]: {"on": None, "known": None, "app": None, "error": None, "at": None, "closes_at": None,
                                   "memory": None, "vital_deaths": 0, "due": None, "restarting": False,
                                   "restarted_at": None, "restart_reason": None}
-                        for p in PROJECTORS}}
+                        for p in PROJECTORS},
+         # present: the outlet was turned on for someone there, last: monotonic time of their last key or move
+         "presences": {d["id"]: {"present": False, "last": None} for d in PRESENCES}}
 vitals: dict[str, str | None] = {p["id"]: None for p in PROJECTORS}  # its pid at the last checkup
 nights: dict[str, object] = {p["id"]: None for p in PROJECTORS}       # the date of the last nightly restart
 last_restart: dict[str, float] = {p["id"]: float("-inf") for p in PROJECTORS}  # monotonic time of the last one
@@ -549,11 +605,15 @@ def _screen_follows(pid: str, before: bool | None, on: bool) -> None:
             _focus_later(pid)
         else:
             _close_later(pid)
-    elif before is None and not on:  # the hub (re)started with the projector off: a close may have been lost
+    elif before is None:  # the first look since the hub (re)started: a move may have been lost
         with lock:
-            down = _position(cover) != 0
-        if down:
+            pos = _position(cover)
+        if not on and pos != 0:
             _close_later(pid)
+        elif on and pos == 0:  # turned on while the hub was away, or could not reach it
+            log.info("%s on at the first look, the screen rolled up: it comes down", pid)
+            move(cover, 100)
+            _focus_later(pid)
 
 
 close_timers: dict[str, threading.Timer] = {}
@@ -1210,10 +1270,240 @@ def set_schedule(oid: str, rules: list[dict]) -> None:
     tick()
 
 
+class Refused(Exception):
+    """An edit of the outlets the hub turns down: the HTTP status and why."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+
+
+def _check_name(name, oid: str | None = None) -> str:
+    """The name, trimmed, if no other outlet, cover or projector has it: Homebridge tells its
+    accessories apart by name. Raises Refused otherwise. Under lock."""
+    if not isinstance(name, str) or not 0 < len(name := name.strip()) <= MAX_NAME or not name.isprintable():
+        raise Refused(400, f"a name of 1 to {MAX_NAME} characters")
+    others = [o for o in OUTLETS if o["id"] != oid] + COVERS + PROJECTORS
+    if any(d["name"].casefold() == name.casefold() for d in others):
+        raise Refused(409, f"{name} is taken")
+    return name
+
+
+def _check_codes(on, off) -> tuple[str, str]:
+    """Two new decimal codes, ON then OFF. Raises Refused otherwise. Under lock."""
+    if not all(isinstance(c, str) and CODE_RE.fullmatch(c) for c in (on, off)) or on == off:
+        raise Refused(400, "two different decimal codes, ON and OFF (make sniff)")
+    for code in (on, off):
+        if code in BY_CODE or code in COVER_CODES:
+            raise Refused(409, f"code {code} already switches {BY_CODE.get(code, COVER_CODES.get(code))[0]}")
+    return on, off
+
+
+def _free_id(name: str) -> str:
+    """An id for the topics, from the name: "Néon basket" -> neon-basket, neon-basket-2... Under lock."""
+    ascii_name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()
+    base = re.sub(r"[^a-z0-9]+", "-", ascii_name).strip("-")[:30] or "outlet"
+    oid, n = base, 2
+    while oid in BY_ID:
+        oid, n = f"{base}-{n}", n + 1
+    return oid
+
+
+def _commit() -> None:
+    """Writes the edits file, whole, and the outlets follow. Homebridge does not have it yet. Under lock."""
+    EDITS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = EDITS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(edits, indent=1, ensure_ascii=False))
+    tmp.replace(EDITS_FILE)
+    _index(edits)
+    POST_KINDS["outlets"] = BY_ID
+    homekit["edits"] += 1
+
+
+def add_outlet(body: dict) -> dict:
+    """{"name", "on", "off"}: a new outlet, with the codes of its remote's buttons."""
+    if not isinstance(body, dict) or set(body) != {"name", "on", "off"}:
+        raise Refused(400, 'expected {"name": "Lamp", "on": "<code>", "off": "<code>"}')
+    with lock:
+        name = _check_name(body["name"])
+        on, off = _check_codes(body["on"], body["off"])
+        outlet = {"id": _free_id(name), "name": name, "on": on, "off": off}
+        edits["added"].append(outlet)
+        _commit()
+    log.info("%s: added as %s", outlet["id"], name)
+    return {"id": outlet["id"], "name": name}
+
+
+def rename_outlet(oid: str, body: dict) -> dict:
+    """{"name"}: the outlet's new name. Its id, so its topics and schedule, stay."""
+    if not isinstance(body, dict) or set(body) != {"name"}:
+        raise Refused(400, 'expected {"name": "Lamp"}')
+    with lock:
+        name = _check_name(body["name"], oid)
+        if name != BY_ID[oid]["name"]:
+            added = next((o for o in edits["added"] if o["id"] == oid), None)
+            if added:
+                added["name"] = name
+            elif name == next(o["name"] for o in TOML_OUTLETS if o["id"] == oid):
+                edits["names"].pop(oid, None)
+            else:
+                edits["names"][oid] = name
+            _commit()
+    log.info("%s: named %s", oid, name)
+    return {"id": oid, "name": name}
+
+
+def remove_outlet(oid: str) -> dict:
+    """Removes an outlet added from the dashboard, its schedule with it. outlets.toml's stay."""
+    with lock:
+        if not any(o["id"] == oid for o in edits["added"]):
+            raise Refused(409, f"{oid} comes from outlets.toml: remove it there")
+        if any(d["outlet"] == oid for d in PRESENCES):
+            raise Refused(409, f"{oid} is switched by a presence of outlets.toml")
+        edits["added"] = [o for o in edits["added"] if o["id"] != oid]
+        _commit()
+        state["outlets"].pop(oid, None)
+        if schedules.pop(oid, None) is not None or applied.pop(oid, None) is not None:
+            save_schedules()
+    log.info("%s: removed", oid)
+    return {"id": oid, "removed": True}
+
+
+# ---------- Homebridge: the outlets as accessories, through the Homebridge UI's API ----------
+# edits: changes to the outlets so far, synced: how many Homebridge has (None: some, maybe not all).
+# A start with dashboard edits does not know whether the deploy's config has them.
+homekit = {"edits": 0, "synced": None if edits["added"] or edits["names"] else 0,
+           "syncing": False, "error": None, "at": None}
+hb_lock = threading.Lock()  # one sync at a time
+
+
+def outlet_accessory(outlet: dict) -> dict:
+    """The outlet's mqttthing accessory, as render.py makes it from outlets.toml."""
+    return {"accessory": "mqttthing", "url": "mqtt://127.0.0.1:1883", "username": USER, "password": PASS,
+            "type": "outlet", "name": outlet["name"],
+            "topics": {"setOn": f"bifrost/outlet/{outlet['id']}/set", "getOn": f"bifrost/outlet/{outlet['id']}/state"},
+            "onValue": "ON", "offValue": "OFF"}
+
+
+def _is_outlet(accessory: dict) -> bool:
+    return (accessory.get("accessory") == "mqttthing" and accessory.get("type") == "outlet"
+            and str(accessory.get("topics", {}).get("setOn", "")).startswith("bifrost/outlet/"))
+
+
+def homebridge_config(config: dict, outlets: list[dict]) -> dict:
+    """Homebridge's config with these outlets in place of those it has, where the first one was;
+    everything else as it is."""
+    accessories = config.get("accessories", [])
+    first = next((i for i, a in enumerate(accessories) if _is_outlet(a)), 0)
+    before = [a for a in accessories[:first] if not _is_outlet(a)]
+    after = [a for a in accessories[first:] if not _is_outlet(a)]
+    return {**config, "accessories": before + [outlet_accessory(o) for o in outlets] + after}
+
+
+def _hb(method: str, path: str, token: str | None = None, body: dict | None = None):
+    """A call to the Homebridge UI's API, its JSON answer (None if empty)."""
+    req = urllib.request.Request(f"http://{HOMEBRIDGE[0]}:{HOMEBRIDGE[1]}/api/{path}", method=method,
+                                 data=None if body is None else json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json",
+                                          **({"Authorization": f"Bearer {token}"} if token else {})})
+    with urllib.request.urlopen(req, timeout=HB_TIMEOUT) as r:
+        data = r.read()
+    return json.loads(data) if data.strip() else None
+
+
+def sync_homebridge() -> bool:
+    """Gives Homebridge the outlets as they are now, and restarts it when they changed: the Home
+    app sees an added or renamed outlet as a new accessory. Whether Homebridge has them."""
+    if not hb_lock.acquire(blocking=False):
+        return False  # one is on its way
+    try:
+        with lock:
+            outlets, version = list(OUTLETS), homekit["edits"]
+            homekit.update(syncing=True)
+        error = _push_outlets(outlets)
+        with lock:
+            homekit.update(syncing=False, error=error)
+            if not error:
+                homekit.update(synced=version, at=now())
+        return not error
+    finally:
+        hb_lock.release()
+
+
+def _push_outlets(outlets: list[dict]) -> str | None:
+    """Puts the outlets into Homebridge's config. Why it could not, None once done."""
+    if not HB_LOGIN["username"]:
+        return "no Homebridge login: HB_UI_USER and HB_UI_PASS in .env, then make env and make deploy"
+    try:
+        token = _hb("POST", "auth/login", body=HB_LOGIN)["access_token"]
+        config = _hb("GET", "config-editor", token)
+        new = homebridge_config(config, outlets)
+        if new != config:
+            _hb("POST", "config-editor", token, new)
+            _hb("PUT", "server/restart", token)
+            log.info("homebridge: %d outlet(s), restarting", len(outlets))
+    except urllib.error.HTTPError as e:
+        return f"Homebridge said {e.code}" + (": wrong HB_UI_USER or HB_UI_PASS" if e.code == 401 else "")
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        return f"Homebridge: {e}"
+    return None
+
+
+def homebridge_after_start() -> None:
+    """At the start, the dashboard's outlets back into Homebridge: a deploy puts back the config
+    of outlets.toml alone. Tries until Homebridge has them, if there is a login to try with."""
+    while HB_LOGIN["username"] and homekit["synced"] is None:
+        if not sync_homebridge():
+            log.warning("homebridge: %s", homekit["error"])
+            time.sleep(HB_RETRY)
+
+
+def seen(did: str, idle: float, at: float | None = None) -> bool:
+    """The Mac at the desk was last used `idle` s ago: someone fresh there with nobody seen
+    before turns the outlet on. Whether someone is there now."""
+    at = time.monotonic() if at is None else at
+    with lock:
+        p = state["presences"][did]
+        p["last"] = at - idle
+        if p["present"] or idle >= FRESH:
+            return p["present"]
+    if _switch_for(did, True):
+        with lock:
+            p["present"] = True
+    return p["present"]
+
+
+def leave(at: float | None = None) -> None:
+    """Turns off the outlet of every presence idle for `away`. Without the broker, the next tick."""
+    at = time.monotonic() if at is None else at
+    with lock:
+        gone = [d["id"] for d in PRESENCES if state["presences"][d["id"]]["present"]
+                and at - state["presences"][d["id"]]["last"] >= d.get("away", 900)]
+    for did in gone:
+        if _switch_for(did, False):
+            with lock:
+                state["presences"][did]["present"] = False
+
+
+def _switch_for(did: str, on: bool) -> bool:
+    """Switches the presence's outlet. Whether it went out to the broker."""
+    sock = conn
+    try:
+        if sock is None:
+            raise OSError("the broker is not connected")
+        switch(sock, BY_ID[PRESENCE_BY_ID[did]["outlet"]], on)
+    except OSError as e:
+        log.warning("%s: %s not sent: %s", did, "ON" if on else "OFF", e)
+        return False
+    log.info("%s: %s", did, "someone there" if on else "nobody there")
+    return True
+
+
 def schedule_loop() -> None:
     while True:
         try:
             tick()
+            leave()
         except Exception:  # noqa: BLE001  a bad tick must not end the schedules
             log.exception("schedule")
         time.sleep(SCHEDULE_TICK)
@@ -1279,7 +1569,11 @@ def snapshot() -> dict:
             "bridge": {"online": bool(seen and time.time() - seen < BRIDGE_TIMEOUT),
                        "last_seen": datetime.fromtimestamp(seen).astimezone().isoformat(timespec="seconds") if seen else None},
             "outlets": [{"id": o["id"], "name": o["name"], **state["outlets"].get(o["id"], {"on": None, "at": None}),
-                         "schedule": schedules.get(o["id"], []), "next": _next(o["id"])} for o in OUTLETS],
+                         "schedule": schedules.get(o["id"], []), "next": _next(o["id"]),
+                         "added": o in edits["added"]} for o in OUTLETS],
+            # pending: outlets added or renamed that the Home app does not have yet
+            "homekit": {"pending": homekit["synced"] != homekit["edits"], "syncing": homekit["syncing"],
+                        "error": homekit["error"], "at": homekit["at"]},
             "covers": [{"id": c["id"], "name": c["name"],
                         "position": None if (p := _position(c["id"])) is None else round(p),
                         "moving": {1: "down", -1: "up"}.get(state["covers"][c["id"]]["dir"]),
@@ -1292,8 +1586,16 @@ def snapshot() -> dict:
                             "closes_at": (datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
                                           if (t := state["projectors"][p["id"]]["closes_at"]) else None)}
                            for p in PROJECTORS],
+            "presences": [_presence(d) for d in PRESENCES],
             "last_code": {k: v for k, v in state["last_code"].items() if k != "ts"} if state["last_code"] else None,
         }
+
+
+def _presence(d: dict) -> dict:
+    """Whether someone is at the desk, and since how long it is idle (s, None before the first word). Under lock."""
+    p = state["presences"][d["id"]]
+    return {"id": d["id"], "name": d["name"], "outlet": d["outlet"], "present": p["present"],
+            "idle": None if p["last"] is None else round(time.monotonic() - p["last"])}
 
 
 def _next(oid: str) -> dict | None:
@@ -1344,13 +1646,24 @@ def _cover_body(body: dict) -> int | None:
     return position
 
 
-POST_KINDS = {"outlets": BY_ID, "covers": COVER_BY_ID, "projectors": PROJECTOR_BY_ID}
-POST_BODIES = {"outlets": _outlet_body, "covers": _cover_body, "projectors": _projector_body}
+def _presence_body(body: dict) -> float:
+    """{"idle": s}: how long the desk's keyboard and mouse have been idle. Raises otherwise."""
+    idle = body["idle"]
+    if len(body) != 1 or type(idle) not in (int, float) or not 0 <= idle < 10 ** 9:
+        raise ValueError
+    return idle
+
+
+POST_KINDS = {"outlets": BY_ID, "covers": COVER_BY_ID, "projectors": PROJECTOR_BY_ID, "presences": PRESENCE_BY_ID}
+POST_BODIES = {"outlets": _outlet_body, "covers": _cover_body, "projectors": _projector_body,
+               "presences": _presence_body}
+NOUNS = {"covers": "cover", "projectors": "projector", "presences": "presence"}
 SCHEDULE_EXPECTED = 'expected a list of up to 20 rules {"at": "HH:MM", "on": true, "days": [1-7]} (days: 1 = Monday, all if omitted)'
 POST_EXPECTED = {"outlets": 'expected {"on": true} or {"on": false}',
                  "covers": 'expected {"position": 0-100}, {"stop": true}, {"press": "up"} or {"declare": 0}',
                  "projectors": 'expected {"on": true}, {"key": "HOME"}, {"app": "<package>"}, {"tap": [0.5, 0.5]}, '
-                               '{"focus": true}, {"restart": true} or {"close": ["<package>"]}'}
+                               '{"focus": true}, {"restart": true} or {"close": ["<package>"]}',
+                 "presences": 'expected {"idle": <s since the last key or mouse move>}'}
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -1408,10 +1721,14 @@ class Handler(SimpleHTTPRequestHandler):
         # No CORS here, and JSON only: a browser asks first (preflight) before posting JSON to
         # another origin, gets no answer, and gives up. So a web page elsewhere cannot switch.
         parts = self.path.split("?", 1)[0].strip("/").split("/")
+        if parts == ["api", "outlets"]:
+            return self._edit(201, add_outlet)
+        if parts == ["api", "homebridge"]:
+            return self._sync()
         kind = parts[1] if len(parts) == 3 and parts[0] == "api" else None
         device = POST_KINDS.get(kind, {}).get(parts[2]) if kind else None
         if not device:
-            return self._json(404, {"error": f"unknown {kind[:-1] if kind in ('covers', 'projectors') else 'outlet'}"})
+            return self._json(404, {"error": f"unknown {NOUNS.get(kind, 'outlet')}"})
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
             return self._json(415, {"error": "send JSON"})
         try:
@@ -1422,6 +1739,8 @@ class Handler(SimpleHTTPRequestHandler):
         if kind == "projectors":  # adb, not the broker
             projector_command(device["id"], **body)
             return self._json(202, {"id": device["id"], **body})
+        if kind == "presences":  # told even without the broker: the outlet waits for it
+            return self._json(200, {"id": device["id"], "present": seen(device["id"], value)})
         sock = conn
         if sock is None:
             return self._json(503, {"error": "the broker is not connected"})
@@ -1450,6 +1769,54 @@ class Handler(SimpleHTTPRequestHandler):
         set_schedule(outlet["id"], rules)
         self._json(200, {"id": outlet["id"], "schedule": rules})
 
+    def do_PATCH(self):
+        # PATCH /api/outlets/<id> {"name": "Lamp"}: renames the outlet
+        if oid := self._outlet():
+            self._edit(200, rename_outlet, oid)
+
+    def do_DELETE(self):
+        # DELETE /api/outlets/<id>: removes an outlet added from the dashboard. Another site's page
+        # cannot: a browser asks first (preflight) before a DELETE elsewhere, and gets no answer
+        if oid := self._outlet():
+            try:
+                self._json(200, remove_outlet(oid))
+            except Refused as e:
+                self._json(e.status, {"error": str(e)})
+
+    def _outlet(self) -> str | None:
+        """The outlet of /api/outlets/<id>; answers 404 without one."""
+        parts = self.path.split("?", 1)[0].strip("/").split("/")
+        if len(parts) == 3 and parts[:2] == ["api", "outlets"] and parts[2] in BY_ID:
+            return parts[2]
+        self._json(404, {"error": "unknown outlet"})
+        return None
+
+    def _is_json(self) -> bool:
+        return self.headers.get("Content-Type", "").split(";")[0].strip() == "application/json"
+
+    def _edit(self, status: int, edit, *args) -> None:
+        """An outlet added or renamed: edit(*args, body), its answer or why not. JSON only, as for POST."""
+        if not self._is_json():
+            return self._json(415, {"error": "send JSON"})
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+        except ValueError:
+            return self._json(400, {"error": "send JSON"})
+        try:
+            answer = edit(*args, body)
+        except Refused as e:
+            return self._json(e.status, {"error": str(e)})
+        self._json(status, answer)
+
+    def _sync(self) -> None:
+        """POST /api/homebridge {}: Homebridge gets the outlets as they are now, the hub tells how in /api/status.json."""
+        if not self._is_json():
+            return self._json(415, {"error": "send JSON"})
+        with lock:
+            homekit["syncing"] = True  # the next status already says so
+        threading.Thread(target=sync_homebridge, daemon=True, name="homebridge").start()
+        self._json(202, {"syncing": True})
+
     def _post_cover(self, cover: dict, body: dict, position: int | None) -> None:
         if "press" in body:
             press(cover["id"], body["press"])
@@ -1475,6 +1842,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     threading.Thread(target=listen, daemon=True, name="mqtt").start()
     threading.Thread(target=schedule_loop, daemon=True, name="schedule").start()
+    threading.Thread(target=homebridge_after_start, daemon=True, name="homebridge").start()
     for p in PROJECTORS:
         threading.Thread(target=watch, args=(p["id"],), daemon=True, name=f"watch-{p['id']}").start()
         threading.Thread(target=guard, args=(p["id"],), daemon=True, name=f"guard-{p['id']}").start()

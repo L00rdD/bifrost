@@ -59,7 +59,7 @@ test("all down, no outlet", async (t) => {
                                    covers: undefined, projectors: undefined }));
   for (const n of ["homebridge", "broker", "bridge", "air"]) assert.ok(!p.$(`[data-n="${n}"]`).classList.contains("up"));
   for (const l of [0, 1, 2]) assert.ok(!p.$(`[data-l="${l}"]`).classList.contains("up"));
-  assert.equal(p.text("#outlets"), "No outlet yet: add one to outlets.toml.");
+  assert.equal(p.text("#outlets"), "No outlet yet: add one below.");
 });
 
 test("a link is up only when both of its ends are", async (t) => {
@@ -604,4 +604,131 @@ test("a rule without a day stays on the page, and a schedule the hub refuses say
   assert.equal(p.text("#toast"), "fan: expected a list of rules");
   assert.ok(p.$(".editor", fan));  // still open, to fix it
   assert.ok(fan.classList.contains("failed"));
+});
+
+// ---------- outlets renamed, added, removed, and Homebridge updated ----------
+const edits = (p) => p.calls.filter((c) => !["GET", "PUT"].includes(c.method) && c.url !== "/api/homebridge");
+
+test("the pencil renames the outlet, and swaps with the schedule's editor", async (t) => {
+  const p = await open(t);
+  const fan = p.card("outlet", "fan");
+  p.$(".plan", fan).click();
+  p.$(".rename", fan).click();
+  const editor = p.$(".editor", fan);
+  assert.equal(editor.dataset.kind, "rename");
+  assert.equal(fan.querySelectorAll(".editor").length, 1);
+  assert.equal(p.$(".remove", fan), null);  // from outlets.toml: renamed only
+  const name = p.$("input", editor);
+  assert.equal(name.value, "Fan");
+  name.value = "Ventilo";
+  p.$(".save", fan).click();
+  await settle();
+  assert.deepEqual(edits(p), [{ url: "/api/outlets/fan", method: "PATCH", body: { name: "Ventilo" } }]);
+  assert.equal(p.$(".editor", fan), null);
+  p.$(".rename", fan).click();
+  p.$(".rename", fan).click();  // the pencil again closes it
+  assert.equal(p.$(".editor", fan), null);
+});
+
+test("a name the hub refuses, or none, says why", async (t) => {
+  const p = await open(t);
+  const fan = p.card("outlet", "fan");
+  p.$(".rename", fan).click();
+  p.$("input", fan).value = " ";
+  p.$(".save", fan).click();
+  await settle();
+  assert.equal(p.text("#toast"), "a name, please");
+  p.answer = (url, options) => (options.method === "PATCH" ? { status: 409, body: { error: "Terrarium is taken" } } : p.status);
+  p.$("input", fan).value = "Terrarium";
+  p.$(".save", fan).click();
+  await settle();
+  assert.equal(p.text("#toast"), "fan: Terrarium is taken");
+  assert.ok(p.$(".editor", fan));
+  assert.ok(fan.classList.contains("failed"));
+  p.$(".cancel", fan).click();
+  assert.equal(p.$(".editor", fan), null);
+});
+
+test("an outlet added here can be removed, once confirmed, and its card goes", async (t) => {
+  const s = status();
+  s.outlets[1].added = true;
+  const p = await open(t, s);
+  const fan = p.card("outlet", "fan");
+  let asked = 0;
+  globalThis.confirm = () => (asked++ > 0);
+  p.$(".rename", fan).click();
+  p.$(".remove", fan).click();
+  await settle();
+  assert.deepEqual(edits(p), []);
+  p.status = status({ outlets: [s.outlets[0], s.outlets[2]] });
+  p.$(".remove", fan).click();
+  await settle();
+  assert.deepEqual(edits(p), [{ url: "/api/outlets/fan", method: "DELETE", body: undefined }]);
+  assert.equal(p.card("outlet", "fan"), null);
+  delete globalThis.confirm;
+});
+
+test("a new outlet: its name and the codes last heard from its remote", async (t) => {
+  const p = await open(t);
+  const tools = p.$("#outlet-tools"), add = p.$(".add-outlet", tools);
+  add.click();
+  assert.equal(add.getAttribute("aria-expanded"), "true");
+  const [name, on, off] = tools.querySelectorAll("input");
+  const [heardOn, heardOff] = tools.querySelectorAll(".heard");
+  heardOn.click();
+  assert.equal(p.text("#toast"), "press the remote's ON button first");
+  p.status = status({ last_code: { code: "7771", via: "remote", at: ago(1) } });
+  await p.tick(5000);
+  heardOn.click();
+  assert.equal(on.value, "7771");
+  p.status = status({ last_code: { code: "7772", via: "sent", at: ago(1) } });
+  await p.tick(5000);
+  heardOff.click();
+  assert.equal(off.value, "");  // a code the hub sent is no remote's
+  off.value = " 7772 ";
+  p.$(".adder .save", tools).click();
+  await settle();
+  assert.equal(p.text("#toast"), "a name and both codes, please");
+  name.value = "Néon basket";
+  p.answer = (url, options) => (options.method === "POST" ? { status: 409, body: { error: "code 7771 already switches fan" } } : p.status);
+  p.$(".adder .save", tools).click();
+  await settle();
+  assert.equal(p.text("#toast"), "Néon basket: code 7771 already switches fan");
+  assert.ok(p.$(".adder", tools));
+  p.answer = (url, options) => (options.method === "POST" ? {} : p.status);
+  p.$(".adder .save", tools).click();
+  await settle();
+  assert.deepEqual(edits(p).at(-1), { url: "/api/outlets", method: "POST", body: { name: "Néon basket", on: "7771", off: "7772" } });
+  assert.equal(p.$(".adder", tools), null);
+  assert.equal(add.getAttribute("aria-expanded"), "false");
+  add.click();
+  add.click();  // the button again closes the form
+  assert.equal(p.$(".adder", tools), null);
+});
+
+test("HomeKit to update: the banner, its button, then Homebridge restarting", async (t) => {
+  const p = await open(t, status({ homekit: { pending: false, syncing: false, error: null, at: null } }));
+  const box = p.$("#outlet-tools .homekit");
+  assert.ok(box.hidden);
+  p.status = status({ homekit: { pending: true, syncing: false, error: null, at: null } });
+  await p.tick(5000);
+  assert.ok(!box.hidden);
+  assert.equal(p.text("p", box), "The Home app does not have these changes yet.");
+  p.status = status({ homekit: { pending: true, syncing: true, error: null, at: null } });
+  p.$("button", box).click();
+  await settle();
+  assert.deepEqual(p.posted().at(-1), ["/api/homebridge", {}]);
+  assert.equal(p.text("p", box), "Updating Homebridge… the Home app is back in a few seconds.");
+  assert.ok(p.$("button", box).disabled);
+  const polls = p.polls();
+  await p.tick(1000);  // polled every second while it restarts
+  assert.equal(p.polls(), polls + 1);
+  p.status = status({ homekit: { pending: true, syncing: false, error: "Homebridge said 401", at: null } });
+  await p.tick(1000);
+  assert.equal(p.text("p", box), "HomeKit not updated: Homebridge said 401");
+  assert.ok(!p.$("button", box).disabled);
+  p.answer = () => new Error("offline");
+  p.$("button", box).click();
+  await settle();
+  assert.equal(p.text("#toast"), "Homebridge: offline");
 });
