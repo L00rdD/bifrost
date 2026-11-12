@@ -11,6 +11,11 @@
 #ifndef WIFI_PASS
   #error "WIFI_PASS not defined. Define it with -DWIFI_PASS=\"your_password\" during compilation."
 #endif
+// Optional second network, joined when the first is out of range (moving to a new box)
+#ifndef WIFI_SSID2
+  #define WIFI_SSID2 ""
+  #define WIFI_PASS2 ""
+#endif
 #ifndef MQTT_HOST
   #error "MQTT_HOST not defined. Define it with -DMQTT_HOST=\"broker_ip_or_hostname\"."
 #endif
@@ -35,6 +40,8 @@
 // Global configuration variables assigned from compile-time macros
 const char* ssid     = WIFI_SSID;
 const char* pass     = WIFI_PASS;
+const char* ssid2    = WIFI_SSID2;
+const char* pass2    = WIFI_PASS2;
 const char* mqttHost = MQTT_HOST;
 const uint16_t mqttPort = MQTT_PORT;
 const char* mqttUser = MQTT_USER;
@@ -63,10 +70,18 @@ const unsigned long mqttRetryInterval = 5000;   // between two attempts at the b
 unsigned long lastHealthyAt = 0;                // last time Wi-Fi and the broker were both up
 unsigned long lastMqttAttempt = 0;
 
+// The first network if it is in range, else the second if that one is: n networks just scanned
+bool use_second_network(int n) {
+  bool first = false, second = false;
+  for (int i = 0; i < n; i++) {
+    first = first || WiFi.SSID(i) == ssid;
+    second = second || (ssid2[0] && WiFi.SSID(i) == ssid2);
+  }
+  return !first && second;
+}
+
 // Connect to Wi-Fi network using credentials provided at compile time
 void setup_wifi() {
-  Serial.print("Connecting to WiFi SSID: ");
-  Serial.println(ssid);
   // What the ESP hears (2.4 GHz only): helps tell a wrong password from a network out of reach
   WiFi.mode(WIFI_STA);
   WiFi.hostname(HOSTNAME);
@@ -79,6 +94,13 @@ void setup_wifi() {
   for (int i = 0; i < n; i++) {
     Serial.printf("  %s  ch %d  %d dBm\n", WiFi.SSID(i).c_str(), WiFi.channel(i), WiFi.RSSI(i));
   }
+  // nothing in range: the first one, and the restart below scans again 2 min later
+  if (use_second_network(n)) {
+    ssid = ssid2;
+    pass = pass2;
+  }
+  Serial.print("Connecting to WiFi SSID: ");
+  Serial.println(ssid);
   WiFi.begin(ssid, pass);
   unsigned long since = millis();
   unsigned long start = millis();
